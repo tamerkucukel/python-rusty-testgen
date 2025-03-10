@@ -22,10 +22,7 @@ fn main() {
     //Match with statement types.
     for statement in generated_ast.iter() {
         match statement {
-            Stmt::FunctionDef(StmtFunctionDef {
-                name,
-                ..
-            }) => {
+            Stmt::FunctionDef(StmtFunctionDef { name, .. }) => {
                 println!("Function name: {}", name);
             }
             _ => {}

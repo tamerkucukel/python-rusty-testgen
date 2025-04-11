@@ -1,5 +1,6 @@
 use rustpython_ast::{
-    fold::Foldable, Arg, Arguments, CmpOp, Expr, Stmt, StmtFor, StmtFunctionDef, StmtIf, StmtRaise, StmtReturn, StmtWhile, Visitor
+    Arg, Arguments, CmpOp, Expr, Stmt, StmtFor, StmtFunctionDef, StmtIf, StmtRaise, StmtReturn,
+    StmtWhile, Visitor,
 };
 use rustpython_parser::Parse;
 
@@ -153,7 +154,7 @@ impl ASTAnalyzer {
                 // Handle non-numeric (assume string literal).
                 // Strip quotes if present.
                 let stripped = if literal.starts_with('\"') && literal.ends_with('\"') {
-                    &literal[1..literal.len()-1]
+                    &literal[1..literal.len() - 1]
                 } else {
                     literal
                 };
@@ -206,9 +207,11 @@ impl ASTAnalyzer {
                     default_args(&function.arguments, Some((&dp.var_name, &then_val)));
                 match outcome {
                     Outcome::Return(ret_stmt) => {
-                        if let Some(expected) = Self::extract_literal_value(ret_stmt.value.as_deref()) {
+                        if let Some(expected) =
+                            Self::extract_literal_value(ret_stmt.value.as_deref())
+                        {
                             let test_code = format!(
-r#"def test_{func_name}_dp{i}_then():
+                                r#"def test_{func_name}_dp{i}_then():
     # When {var} {op} {lit} holds (using {val}), expect a literal return value.
     assert {func_name}({args}) == {expected}
 "#,
@@ -225,9 +228,11 @@ r#"def test_{func_name}_dp{i}_then():
                         }
                     }
                     Outcome::Raise(raise_stmt) => {
-                        if let Some(exc_type) = Self::extract_exception_type(raise_stmt.exc.as_deref()) {
+                        if let Some(exc_type) =
+                            Self::extract_exception_type(raise_stmt.exc.as_deref())
+                        {
                             let test_code = format!(
-r#"import pytest
+                                r#"import pytest
 
 def test_{func_name}_dp{i}_then_exception():
     # When {var} {op} {lit} holds (using {val}), expect an exception.
@@ -256,9 +261,11 @@ def test_{func_name}_dp{i}_then_exception():
                     default_args(&function.arguments, Some((&dp.var_name, &else_val)));
                 match outcome {
                     Outcome::Return(ret_stmt) => {
-                        if let Some(expected) = Self::extract_literal_value(ret_stmt.value.as_deref()) {
+                        if let Some(expected) =
+                            Self::extract_literal_value(ret_stmt.value.as_deref())
+                        {
                             let test_code = format!(
-r#"def test_{func_name}_dp{i}_else():
+                                r#"def test_{func_name}_dp{i}_else():
     # When {var} {op} {lit} does not hold (using {val}), expect a literal return value.
     assert {func_name}({args}) == {expected}
 "#,
@@ -275,9 +282,11 @@ r#"def test_{func_name}_dp{i}_else():
                         }
                     }
                     Outcome::Raise(raise_stmt) => {
-                        if let Some(exc_type) = Self::extract_exception_type(raise_stmt.exc.as_deref()) {
+                        if let Some(exc_type) =
+                            Self::extract_exception_type(raise_stmt.exc.as_deref())
+                        {
                             let test_code = format!(
-r#"import pytest
+                                r#"import pytest
 
 def test_{func_name}_dp{i}_else_exception():
     # When {var} {op} {lit} does not hold (using {val}), expect an exception.
@@ -306,7 +315,7 @@ def test_{func_name}_dp{i}_else_exception():
                 if let Some(expected) = Self::extract_literal_value(last_return.value.as_deref()) {
                     let arg_assignment = default_args(&function.arguments, None);
                     let test_code = format!(
-r#"def test_{func_name}_default():
+                        r#"def test_{func_name}_default():
     assert {func_name}({args}) == {expected}
 "#,
                         func_name = func_name,
@@ -326,9 +335,7 @@ r#"def test_{func_name}_default():
         match expr_opt {
             Some(expr) => match expr {
                 // Support constant values.
-                Expr::Constant(c) => {
-                    Some(format!("{:?}", c.value))
-                },
+                Expr::Constant(c) => Some(format!("{:?}", c.value)),
                 // In case the literal is given by a variable name.
                 Expr::Name(n) => Some(n.id.to_string()),
                 _ => None,

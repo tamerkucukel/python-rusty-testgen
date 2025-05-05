@@ -34,7 +34,6 @@ pub struct FunctionMetric {
     // Simple decision points identified.
     pub decision_points: Vec<DecisionPoint>,
     // Other metrics could be added here (e.g., cyclomatic complexity, lines of code)
-    pub default_entry_outcome: Option<Outcome>,
 }
 
 impl FunctionMetric {
@@ -45,7 +44,6 @@ impl FunctionMetric {
             return_defs: Vec::new(),
             raise_defs: Vec::new(),
             decision_points: Vec::new(),
-            default_entry_outcome: None, // Initialize as None
         }
     }
 }
@@ -640,18 +638,9 @@ impl Visitor for FunctionMetricCollector {
 
         self.function_stack.push(func_metric);
 
+        // Visit the function body, arguments, etc.
         // Note: The generic_visit_* methods take a reference, which is correct.
-        // Visit the function body, arguments, etc. This populates return_defs, raise_defs, and decision_points.
         self.generic_visit_stmt_function_def(node.clone());
-
-        // After visiting all children, find the default entry outcome by scanning the body.
-        // We use the extract_outcome helper, which correctly looks only at the top level of the block.
-        if let Some(current) = self.function_stack.last_mut() {
-            current.default_entry_outcome = Self::extract_outcome(&node.body);
-       } else {
-            // Should not happen if stack management is correct
-            eprintln!("Warning: Function stack was unexpectedly empty when trying to set default_entry_outcome for function '{}'", node.name);
-       }
 
         // After visiting the function, record its metric.
         // The stack should not be empty here if we entered a function definition.

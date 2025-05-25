@@ -1,50 +1,153 @@
+use std::ops::Deref;
+
 use rustpython_ast::{
-    Arg, CmpOp, Constant, Expr, Stmt, StmtFor, StmtFunctionDef, StmtIf, StmtRaise, StmtReturn,
-    StmtWhile, Visitor,
+    Arg, ArgWithDefault, CmpOp, Constant, Expr, Stmt, StmtFor, StmtFunctionDef, StmtIf, StmtRaise,
+    StmtReturn, StmtWhile, Visitor,
 };
 use rustpython_parser::Parse;
 
-/// Represents a function outcome along one execution path.
-#[derive(Clone, Debug)]
-pub enum Outcome {
-    Return(StmtReturn),
-    Raise(StmtRaise),
-    // Add other terminal outcomes if needed
-}
 
-/// Represents an if-statement decision point based on a simple comparison.
-#[derive(Clone, Debug)]
-pub struct DecisionPoint {
-    pub var_name: String, // The function argument being compared
-    pub literal: String,  // String representation of the literal value in comparison
-    pub op: String,       // Comparator operator as a string (e.g., "==", "<", etc.)
-    pub then_outcome: Option<Outcome>,
-    pub else_outcome: Option<Outcome>,
-    // Note: This only captures simple `variable <op> literal` or `literal <op> variable` checks.
-}
 
-/// Holds metrics for a function collected during AST traversal.
-#[derive(Clone, Debug)]
-pub struct FunctionMetric {
-    pub name: String,
-    pub arguments: Vec<Arg>,
-    // Top-level returns/raises not necessarily tied to a simple decision point
-    pub return_defs: Vec<StmtReturn>,
-    pub raise_defs: Vec<StmtRaise>,
-    // Simple decision points identified.
-    pub decision_points: Vec<DecisionPoint>,
-    // Other metrics could be added here (e.g., cyclomatic complexity, lines of code)
-}
 
-impl FunctionMetric {
-    pub fn new() -> Self {
-        Self {
-            name: String::new(),
-            arguments: Vec::new(),
-            return_defs: Vec::new(),
-            raise_defs: Vec::new(),
-            decision_points: Vec::new(),
+#[derive(Clone, Debug)]
+/// Turns an expression and its sub-expressions into a string representation.
+pub struct ExpressionParser;
+
+impl ExpressionParser {
+    /// Converts an exception type expression to its string representation.
+    pub fn exception_type_to_str(&self, expr: &Expr) -> Option<String> {
+        // Parse the expression to a string representation
+        match expr {
+            Expr::Name(name) => Some(name.id.to_string()), // Handles `raise Exception`
+            Expr::Call(call) => {
+                // Handles `raise Exception(...)`
+                if let Expr::Name(name) = &*call.func {
+                    Some(name.id.to_string())
+                } else {
+                    None
+                }
+            }
+            _ => None, // Handle other expression types if needed
         }
+    }
+
+    /// Converts a comparison operator to its string representation.
+    pub fn cmpop_to_str(&self, op: &CmpOp) -> Option<&'static str> {
+        match op {
+            CmpOp::Eq => Some("=="),
+            CmpOp::NotEq => Some("!="),
+            CmpOp::Lt => Some("<"),
+            CmpOp::LtE => Some("<="),
+            CmpOp::Gt => Some(">"),
+            CmpOp::GtE => Some(">="),
+            CmpOp::Is => Some("is"),
+            CmpOp::IsNot => Some("is not"),
+            CmpOp::In => Some("in"),
+            CmpOp::NotIn => Some("not in"),
+        }
+    }
+}
+
+/// Extracts condition details from an if’s test expression.
+///
+/// For a Compare expression of the form "variable <operator> literal" or "literal <operator> variable",
+/// returns (variable name, literal value string, operator string).
+/// Limited to simple comparisons with a single operator and literal.
+fn extract_condition_details(expr: &Expr) -> Option<(String, String, String)> {
+    if let Expr::Compare(compare_expr) = expr {
+        // Expect a single comparator and a single right-hand expression.
+        if compare_expr.ops.len() == 1 && compare_expr.comparators.len() == 1 {
+            let op = compare_expr.ops.get(0)?;
+            let right_expr = compare_expr.comparators.get(0)?;
+
+            // Case 1: variable <op> literal
+            if let Expr::Name(var_name_expr) = &*compare_expr.left {
+                if let Some(literal) = extract_literal_value(Some(right_expr)) {
+                    let op_str = cmp_op_to_str(op)?;
+                    return Some((var_name_expr.id.to_string(), literal, op_str.to_string()));
+                }
+            }
+            // Case 2: literal <op> variable (need to flip operator for variable-centric view)
+            if let Expr::Name(var_name_expr) = right_expr {
+                if let Some(literal) = extract_literal_value(Some(&compare_expr.left)) {
+                    // Flip the operator for logical equivalence based on variable
+                    let flipped_op_str = match op {
+                        CmpOp::Eq => Some("=="),
+                        CmpOp::NotEq => Some("!="),
+                        CmpOp::Lt => Some(">"),   // 10 < x is same as x > 10
+                        CmpOp::LtE => Some(">="), // 10 <= x is same as x >= 10
+                        CmpOp::Gt => Some("<"),   // 10 > x is same as x < 10
+                        CmpOp::GtE => Some("<="), // 10 >= x is same as x <= 10
+                        _ => None,                // Unsupported flipped operator
+                    }?;
+                    return Some((
+                        var_name_expr.id.to_string(),
+                        literal,
+                        flipped_op_str.to_string(),
+                    ));
+                }
+            }
+        }
+    }
+    None // Condition is not a simple variable/literal comparison
+}
+
+/// Extracts the first Outcome (Return or Raise) from a list of statements.
+///
+/// It traverses the slice *linearly* and returns the first terminal statement found
+/// at the top level of this slice. It does *not* recurse into nested control flow.
+fn extract_outcome(stmts: &[Stmt]) -> Option<Outcome> {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Return(ret) => return Some(Outcome::Return(ret.clone())),
+            Stmt::Raise(raise) => return Some(Outcome::Raise(raise.clone())),
+            // Ignore other statements for outcome extraction at this level,
+            // as they are not terminal.
+            _ => continue,
+        }
+    }
+    None // No terminal statement found at the top level of this block.
+}
+
+/// Extracts a literal value from an expression (if supported).
+/// Returns a string representation suitable for test code.
+fn extract_literal_value(expr_opt: Option<&Expr>) -> Option<String> {
+    match expr_opt {
+        Some(expr) => match expr {
+            Expr::Constant(c) => {
+                match &c.value {
+                    Constant::None => Some("None".to_string()),
+                    Constant::Bool(b) => Some(b.to_string()),
+                    Constant::Str(s) => Some(format!("{:?}", s)), // Use debug fmt for quotes
+                    Constant::Int(i) => Some(i.to_string()),
+                    Constant::Float(f) => Some(f.to_string()),
+                    // Add other supported constants if needed (Bytes, Tuple, etc.)
+                    _ => None, // Unsupported constant type
+                }
+            }
+            // In case the literal is given by a variable name (e.g. `if x == MY_CONSTANT`)
+            // Treat the variable name as the literal for test generation purposes,
+            // assuming it represents a constant value. This is a simplification.
+            Expr::Name(n) => Some(n.id.to_string()),
+            // Allow simple unary negation on constants like -1
+            Expr::UnaryOp(unary_op) => {
+                if let rustpython_ast::UnaryOp::USub = unary_op.op {
+                    if let Expr::Constant(c) = &*unary_op.operand {
+                        match &c.value {
+                            Constant::Int(i) => Some(format!("-{}", i)),
+                            Constant::Float(f) => Some(format!("-{}", f)),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None, // Unsupported expression type for literal extraction
+        },
+        None => None,
     }
 }
 
@@ -63,142 +166,114 @@ impl FunctionMetricCollector {
         }
     }
 
-    /// Extracts condition details from an if’s test expression.
-    ///
-    /// For a Compare expression of the form "variable <operator> literal" or "literal <operator> variable",
-    /// returns (variable name, literal value string, operator string).
-    /// Limited to simple comparisons with a single operator and literal.
-    fn extract_condition_details(expr: &Expr) -> Option<(String, String, String)> {
-        if let Expr::Compare(compare_expr) = expr {
-            // Expect a single comparator and a single right-hand expression.
-            if compare_expr.ops.len() == 1 && compare_expr.comparators.len() == 1 {
-                let op = compare_expr.ops.get(0)?;
-                let right_expr = compare_expr.comparators.get(0)?;
-
-                // Case 1: variable <op> literal
-                if let Expr::Name(var_name_expr) = &*compare_expr.left {
-                    if let Some(literal) = Self::extract_literal_value(Some(right_expr)) {
-                        let op_str = cmp_op_to_str(op)?;
-                        return Some((var_name_expr.id.to_string(), literal, op_str.to_string()));
-                    }
-                }
-                // Case 2: literal <op> variable (need to flip operator for variable-centric view)
-                if let Expr::Name(var_name_expr) = right_expr {
-                    if let Some(literal) = Self::extract_literal_value(Some(&compare_expr.left)) {
-                        // Flip the operator for logical equivalence based on variable
-                        let flipped_op_str = match op {
-                            CmpOp::Eq => Some("=="),
-                            CmpOp::NotEq => Some("!="),
-                            CmpOp::Lt => Some(">"), // 10 < x is same as x > 10
-                            CmpOp::LtE => Some(">="), // 10 <= x is same as x >= 10
-                            CmpOp::Gt => Some("<"), // 10 > x is same as x < 10
-                            CmpOp::GtE => Some("<="), // 10 >= x is same as x <= 10
-                            _ => None,              // Unsupported flipped operator
-                        }?;
-                        return Some((
-                            var_name_expr.id.to_string(),
-                            literal,
-                            flipped_op_str.to_string(),
-                        ));
-                    }
-                }
-            }
-        }
-        None // Condition is not a simple variable/literal comparison
-    }
-
-    /// Extracts the first Outcome (Return or Raise) from a list of statements.
-    ///
-    /// It traverses the slice *linearly* and returns the first terminal statement found
-    /// at the top level of this slice. It does *not* recurse into nested control flow.
-    fn extract_outcome(stmts: &[Stmt]) -> Option<Outcome> {
-        for stmt in stmts {
-            match stmt {
-                Stmt::Return(ret) => return Some(Outcome::Return(ret.clone())),
-                Stmt::Raise(raise) => return Some(Outcome::Raise(raise.clone())),
-                // Ignore other statements for outcome extraction at this level,
-                // as they are not terminal.
-                _ => continue,
-            }
-        }
-        None // No terminal statement found at the top level of this block.
-    }
-
-    /// Extracts a literal value from an expression (if supported).
-    /// Returns a string representation suitable for test code.
-    fn extract_literal_value(expr_opt: Option<&Expr>) -> Option<String> {
-        match expr_opt {
-            Some(expr) => match expr {
-                Expr::Constant(c) => {
-                    match &c.value {
-                        Constant::None => Some("None".to_string()),
-                        Constant::Bool(b) => Some(b.to_string()),
-                        Constant::Str(s) => Some(format!("{:?}", s)), // Use debug fmt for quotes
-                        Constant::Int(i) => Some(i.to_string()),
-                        Constant::Float(f) => Some(f.to_string()),
-                        // Add other supported constants if needed (Bytes, Tuple, etc.)
-                        _ => None, // Unsupported constant type
-                    }
-                }
-                // In case the literal is given by a variable name (e.g. `if x == MY_CONSTANT`)
-                // Treat the variable name as the literal for test generation purposes,
-                // assuming it represents a constant value. This is a simplification.
-                Expr::Name(n) => Some(n.id.to_string()),
-                // Allow simple unary negation on constants like -1
-                Expr::UnaryOp(unary_op) => {
-                    if let rustpython_ast::UnaryOp::USub = unary_op.op {
-                        if let Expr::Constant(c) = &*unary_op.operand {
-                            match &c.value {
-                                Constant::Int(i) => Some(format!("-{}", i)),
-                                Constant::Float(f) => Some(format!("-{}", f)),
-                                _ => None,
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                }
-                _ => None, // Unsupported expression type for literal extraction
-            },
-            None => None,
-        }
-    }
-
-    /// Extracts the exception type name from an optional expression in a raise statement.
-    fn extract_exception_type(expr_opt: Option<&Expr>) -> Option<String> {
-        match expr_opt {
-            Some(expr) => match expr {
-                // Handles `raise Exception(...)`
-                Expr::Call(call_expr) => {
-                    if let Expr::Name(ref name_expr) = *call_expr.func {
-                        Some(name_expr.id.to_string())
-                    } else {
-                        None // Call func is not a simple name
-                    }
-                }
-                // Handles `raise Exception`
-                Expr::Name(name_expr) => Some(name_expr.id.to_string()),
-                _ => None, // Unsupported expression type for exception extraction
-            },
-            None => None, // raise without an argument
-        }
+    // Private helper to get mutable reference to current function metric
+    fn current_function_mut(&mut self) -> Option<&mut FunctionMetric> {
+        self.function_stack.last_mut()
     }
 }
 
-// Helper function to convert CmpOp to string
-fn cmp_op_to_str(op: &CmpOp) -> Option<&'static str> {
-    match op {
-        CmpOp::Eq => Some("=="),
-        CmpOp::NotEq => Some("!="),
-        CmpOp::Lt => Some("<"),
-        CmpOp::LtE => Some("<="),
-        CmpOp::Gt => Some(">"),
-        CmpOp::GtE => Some(">="),
-        // Add other operators if needed, e.g., Is, IsNot, In, NotIn
-        _ => None, // Unsupported operator
+// Visitor trait implementation.
+impl Visitor for FunctionMetricCollector {
+    fn visit_stmt_function_def(&mut self, node: StmtFunctionDef) {
+        // Start a new function metric.
+        let mut func_metric = FunctionMetric::new();
+        // Clone the name (String) and arguments (Vec<Arg>) explicitly for storage
+        func_metric.name = node.name.to_string();
+        func_metric.arguments = node.args.args.iter().map(|arg| arg.def.clone()).collect(); // Clone ArgDef
+
+        self.function_stack.push(func_metric);
+
+        // Visit the function body, arguments, etc.
+        // generic_visit_* takes a reference to the node.
+        self.generic_visit_stmt_function_def(node.clone());
+
+        // After visiting the function, record its metric.
+        // The stack should not be empty here if we entered a function definition.
+        if let Some(completed) = self.function_stack.pop() {
+            self.function_metrics.push(completed);
+        } else {
+            // This indicates an issue in stack management if it's empty here
+            eprintln!(
+                "Warning: Function stack was empty after visiting function '{}'",
+                node.name
+            );
+        }
     }
+
+    fn visit_stmt_if(&mut self, node: StmtIf) {
+        // Try to extract decision details from the if condition using the standalone helper.
+        if let Some((var_name, literal, op)) = extract_condition_details(&node.test) {
+            // Use the standalone helper to extract outcomes from the blocks.
+            // extract_outcome needs &[Stmt], so pass references to the vecs.
+            let then_outcome = extract_outcome(&node.body);
+            let else_outcome = if !node.orelse.is_empty() {
+                extract_outcome(&node.orelse)
+            } else {
+                None
+            };
+
+            // Only record the decision point if we captured at least one outcome
+            if then_outcome.is_some() || else_outcome.is_some() {
+                let dp = DecisionPoint {
+                    var_name,
+                    literal,
+                    op,
+                    then_outcome, // These are clones from extract_outcome
+                    else_outcome, // These are clones from extract_outcome
+                };
+                if let Some(current) = self.current_function_mut() {
+                    current.decision_points.push(dp);
+                }
+            } else {
+                // Optionally log skipped IFs if desired
+                // eprintln!("Skipping decision point analysis for IF: No top-level terminal outcome found in body or orelse.");
+            }
+        } else {
+            // Optionally log skipped complex IFs if desired
+            // eprintln!("Skipping decision point analysis for IF: Condition was not a simple variable/literal comparison.");
+        }
+
+        // Visit children of the if statement (body and orelse).
+        self.generic_visit_stmt_if(node);
+    }
+
+    fn visit_stmt_return(&mut self, node: StmtReturn) {
+        if let Some(current) = self.current_function_mut() {
+            // Add all returns found *within* a function scope.
+            current.return_defs.push(node.clone()); // Clone to store the node
+        }
+        // Visit children of the return statement (e.g., the return value expression)
+        self.generic_visit_stmt_return(node);
+    }
+
+    fn visit_stmt_raise(&mut self, node: StmtRaise) {
+        if let Some(current) = self.current_function_mut() {
+            // Add all raises found *within* a function scope.
+            current.raise_defs.push(node.clone()); // Clone to store the node
+        }
+        // Visit children of the raise statement (e.g., the exception expression)
+        self.generic_visit_stmt_raise(node);
+    }
+
+    // Ensure other visit methods also take references if implementing specific logic,
+    // or rely on the default generic traversal which now uses references.
+    fn visit_stmt_while(&mut self, node: StmtWhile) {
+        self.generic_visit_stmt_while(node);
+    }
+
+    fn visit_stmt_for(&mut self, node: StmtFor) {
+        self.generic_visit_stmt_for(node);
+    }
+
+    // The visit_stmt method is crucial for traversing all statements within a block.
+    // It typically calls generic_visit_stmt which dispatches to the specific visit_stmt_* methods.
+    fn visit_stmt(&mut self, node: Stmt) {
+        self.generic_visit_stmt(node);
+    }
+
+    // Add visit methods for expressions, etc., if needed for deeper traversal beyond generic.
+    // Example:
+    // fn visit_expr(&mut self, node: &Expr) { self.generic_visit_expr(node); }
 }
 
 // --- Test Generation Logic (Standalone Function) ---
@@ -462,10 +537,8 @@ pub fn generate_tests_for_function(function: &FunctionMetric) -> String {
     ) -> Option<String> {
         match outcome {
             Outcome::Return(ret_stmt) => {
-                // Reuse the collector's logic for extracting return values for consistency
-                if let Some(expected) =
-                    FunctionMetricCollector::extract_literal_value(ret_stmt.value.as_deref())
-                {
+                // Use the standalone helper for extracting return values
+                if let Some(expected) = extract_literal_value(ret_stmt.value.as_deref()) {
                     Some(format!(
                         "    assert {}({}) == {}",
                         func_name, args_string, expected
@@ -476,10 +549,8 @@ pub fn generate_tests_for_function(function: &FunctionMetric) -> String {
                 }
             }
             Outcome::Raise(raise_stmt) => {
-                // Reuse the collector's logic for extracting exception types
-                if let Some(exc_type) =
-                    FunctionMetricCollector::extract_exception_type(raise_stmt.exc.as_deref())
-                {
+                // Use the standalone helper for extracting exception types
+                if let Some(exc_type) = extract_exception_type(raise_stmt.exc.as_deref()) {
                     Some(format!(
                         "    with pytest.raises({}):\n        {}({})",
                         exc_type, func_name, args_string
@@ -626,123 +697,6 @@ def test_{func_name}_default_exception():
     }
 }
 
-impl Visitor for FunctionMetricCollector {
-    fn visit_stmt_function_def(&mut self, node: StmtFunctionDef) {
-        // Start a new function metric.
-        let mut func_metric = FunctionMetric::new();
-        // Clone the name (String) and arguments (Vec<Arg>) explicitly
-        func_metric.name = node.name.to_string();
-        // Clone the Arguments struct and then collect the Arg defs
-        // Cloning the entire Arguments node is okay here as we need its parts.
-        func_metric.arguments = node.args.args.iter().map(|arg| arg.def.clone()).collect();
-
-        self.function_stack.push(func_metric);
-
-        // Visit the function body, arguments, etc.
-        // Note: The generic_visit_* methods take a reference, which is correct.
-        self.generic_visit_stmt_function_def(node.clone());
-
-        // After visiting the function, record its metric.
-        // The stack should not be empty here if we entered a function definition.
-        if let Some(completed) = self.function_stack.pop() {
-            self.function_metrics.push(completed);
-        } else {
-            // This indicates an issue in stack management if it's empty here
-            eprintln!(
-                "Warning: Function stack was empty after visiting function '{}'",
-                node.name
-            );
-        }
-    }
-
-    // We visit arguments within visit_stmt_function_def now
-    // fn visit_arguments(&mut self, node: &'a Arguments) {
-    //     // We've already collected arguments in visit_stmt_function_def
-    //     self.generic_visit_arguments(node); // Still need to visit children like default values
-    // }
-    // The default generic_visit_stmt_function_def visits args, so we don't need a custom visit_arguments
-    // unless we wanted to do something specific with default values or other arguments fields.
-    // Let's remove the custom visit_arguments for simplicity if not strictly needed for metric collection.
-
-    fn visit_stmt_if(&mut self, node: StmtIf) {
-        // Try to extract decision details from the if condition.
-        if let Some((var_name, literal, op)) = Self::extract_condition_details(&node.test) {
-            // Only process this as a "decision point" if we could extract simple details.
-            let then_outcome = Self::extract_outcome(&node.body);
-            let else_outcome = if !node.orelse.is_empty() {
-                Self::extract_outcome(&node.orelse)
-            } else {
-                None // No else block means no specific 'else' outcome captured here
-            };
-
-            // Only record the decision point if we captured at least one outcome
-            // (or if we wanted to track decisions regardless of captured outcome)
-            // Let's only record if we have extracted info AND found at least one outcome for test generation potential
-            if then_outcome.is_some() || else_outcome.is_some() {
-                let dp = DecisionPoint {
-                    var_name,
-                    literal,
-                    op,
-                    then_outcome,
-                    else_outcome,
-                };
-                if let Some(current) = self.function_stack.last_mut() {
-                    current.decision_points.push(dp);
-                }
-            } else {
-                // Optionally log that a potentially interesting IF was skipped because
-                // its blocks didn't contain a simple terminal return/raise at the top level.
-                // eprintln!("Skipping decision point analysis for IF: No top-level terminal outcome found in body or orelse.");
-            }
-        } else {
-            // Optionally log that an IF was skipped because its condition was too complex.
-            // eprintln!("Skipping decision point analysis for IF: Condition was not a simple variable/literal comparison.");
-        }
-
-        // Still need to visit children of the if statement (body and orelse)
-        // to find nested function definitions, returns, raises, etc.
-        self.generic_visit_stmt_if(node);
-    }
-
-    fn visit_stmt_return(&mut self, node: StmtReturn) {
-        if let Some(current) = self.function_stack.last_mut() {
-            // Only add returns that are not part of a simple decision point already captured?
-            // Or add all returns and process them later?
-            // Let's add all returns found *within* a function scope.
-            // The test generation logic will decide which ones to use.
-            current.return_defs.push(node.clone()); // Clone to store the node
-        }
-        self.generic_visit_stmt_return(node);
-    }
-
-    fn visit_stmt_raise(&mut self, node: StmtRaise) {
-        if let Some(current) = self.function_stack.last_mut() {
-            // Add all raises found *within* a function scope.
-            current.raise_defs.push(node.clone()); // Clone to store the node
-        }
-        self.generic_visit_stmt_raise(node);
-    }
-
-    // Implement visit methods for other statement types if you need to collect
-    // metrics or recurse into them, but don't add logic that modifies the
-    // FunctionMetric beyond tracking terminal statements or simple decisions.
-    // The generic_visit_* methods handle the recursion.
-
-    fn visit_stmt_while(&mut self, node: StmtWhile) {
-        // We don't analyze while loops for decision points in this version
-        self.generic_visit_stmt_while(node);
-    }
-
-    fn visit_stmt_for(&mut self, node: StmtFor) {
-        // We don't analyze for loops for decision points in this version
-        self.generic_visit_stmt_for(node);
-    }
-
-    // Need to implement visit_stmt for the top-level traversal entry point
-    // The ASTAnalyzer struct is gone, so we need a new top-level orchestrator or function.
-    // Let's create a public function `analyze_python_code`
-}
-
 // --- Top-level Orchestration ---
 
 /// Parses Python code, analyzes functions using the collector, and returns the collected metrics.
@@ -750,15 +704,14 @@ impl Visitor for FunctionMetricCollector {
 pub fn analyze_python_code(
     code: &str,
 ) -> Result<Vec<FunctionMetric>, rustpython_parser::ParseError> {
-    // Step 8: Use Result for parsing error handling
     let ast: Vec<Stmt> = Parse::parse_without_path(code)?;
 
     let mut collector = FunctionMetricCollector::new();
 
-    // Visit each top-level statement
-    for stmt in ast.into_iter() {
-        // Iterate over references to avoid consuming the AST Vec immediately
-        collector.visit_stmt(stmt);
+    // Visit each top-level statement by reference.
+    for stmt in &ast {
+        // Iterate over references
+        collector.visit_stmt(stmt.clone()); // Pass reference to visit_stmt
     }
 
     Ok(collector.function_metrics)

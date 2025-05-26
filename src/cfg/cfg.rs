@@ -70,7 +70,7 @@ impl ControlFlowGraph {
     }
 
     /// Visits a function definition and builds the CFG for it.
-    pub fn build_graph(&mut self, node: StmtFunctionDef) {
+    pub fn from_ast(&mut self, node: StmtFunctionDef) {
         self.visit_stmt_function_def(node);
     }
 

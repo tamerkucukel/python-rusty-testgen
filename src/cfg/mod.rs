@@ -1,4 +1,4 @@
-//! cfg module – public façade for the control-flow-graph builder.
+//! cfg module – public facade for the control-flow-graph builder.
 mod cfg;
 
 // ─────────────────────────────────────────────────────────────────────────────

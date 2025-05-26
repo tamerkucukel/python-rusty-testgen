@@ -52,8 +52,8 @@ pub enum Edge {
 /// Represents a control flow graph for a Python function.
 #[derive(Clone, Debug, Default)]
 pub struct ControlFlowGraph {
-    graph: HashMap<NodeId, Node>,
     entry: NodeId,
+    graph: HashMap<NodeId, Node>,
     frontier_stack: Vec<(NodeId, Edge)>, // pred edges waiting to connect to next node with scope status.
 }
 
@@ -74,42 +74,29 @@ impl ControlFlowGraph {
         self.visit_stmt_function_def(node);
     }
 
-    /// Returns all paths in the control flow graph as a vector of vectors.
-    pub fn get_paths(&self) -> Vec<Vec<(NodeId, Edge)>> {
-        let mut paths = Vec::new();
-        let mut current_path = Vec::new();
+    /// Returns the entry node ID of the control flow graph.
+    pub fn get_entry(&self) -> NodeId {
+        self.entry
+    }
 
-        fn get_path(
-            graph: &ControlFlowGraph,
-            node_id: NodeId,
-            current_path: &mut Vec<(NodeId, Edge)>,
-            paths: &mut Vec<Vec<(NodeId, Edge)>>,
-        ) {
-            if let Some(node) = graph.get_node(node_id) {
-                match node {
-                    Node::Cond { succ, .. } => {
-                        // Traverse TRUE edge first
-                        current_path.push((node_id, Edge::True));
-                        get_path(graph, succ[0], current_path, paths);
-                        current_path.pop(); // Pop TRUE edge
+    /// Returns a reference to the control flow graph.
+    pub fn get_graph(&self) -> &HashMap<NodeId, Node> {
+        &self.graph
+    }
 
-                        // Then FALSE edge
-                        current_path.push((node_id, Edge::False));
-                        get_path(graph, succ[1], current_path, paths);
-                        current_path.pop(); // Pop FALSE edge
-                    }
-                    Node::Return { .. } | Node::Raise { .. } => {
-                        // Collect the path when reaching an exit node
-                        current_path.push((node_id, Edge::True)); // Mark the exit node
-                        paths.push(current_path.clone());
-                        current_path.pop(); // Pop the exit node marking
-                    }
-                }
-            }
-        }
+    /// Returns the entry node ID of the control flow graph.
+    pub fn get_node(&self, id: NodeId) -> Option<&Node> {
+        self.graph.get(&id)
+    }
 
-        get_path(self, self.entry, &mut current_path, &mut paths);
-        paths
+    /// Returns a mutable reference to the control flow graph.
+    pub fn get_graph_mut(&mut self) -> &mut HashMap<NodeId, Node> {
+        &mut self.graph
+    }
+
+    /// Returns a mutable reference to a node in the graph by its ID.
+    pub fn get_node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+        self.graph.get_mut(&id)
     }
 
     /// Prints all paths in the control flow graph.
@@ -152,16 +139,6 @@ impl ControlFlowGraph {
         let id = self.graph.len();
         self.graph.insert(id, node);
         id
-    }
-
-    /// Returns the entry node ID of the control flow graph.
-    fn get_node(&self, id: NodeId) -> Option<&Node> {
-        self.graph.get(&id)
-    }
-
-    /// Returns a mutable reference to a node in the graph by its ID.
-    fn get_node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
-        self.graph.get_mut(&id)
     }
 
     /// Connects the current frontier stack to the specified node.

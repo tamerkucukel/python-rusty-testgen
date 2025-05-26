@@ -1,16 +1,14 @@
+mod ast_loader;
 mod cfg;
-use std::fs;
 
-use rustpython_ast::Stmt;
-fn read_file(path: &str) -> String {
-    fs::read_to_string(path).expect("File couldn't read")
-}
-
-fn main() -> Result<(), rustpython_parser::ParseError> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let python_file_path = "./test-file.py";
-    let python_code = read_file(python_file_path);
-    // Parse ast of the python code.
-    let python_ast: Vec<Stmt> = rustpython_parser::Parse::parse_without_path(&python_code)?;
-    
+    let python_ast = ast_loader::load_ast_from_file(python_file_path)?;
+    for func_def in python_ast {
+        let mut cfg = cfg::ControlFlowGraph::new();
+        cfg.from_ast(func_def);
+        cfg.print_paths();
+    }
+
     Ok(())
 }

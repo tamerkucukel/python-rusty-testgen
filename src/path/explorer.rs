@@ -21,34 +21,31 @@ impl Explorer {
 
     /// Depth-first collection of all root-to-leaf paths.
     fn traverse(graph: &HashMap<NodeId, Node>, entry: NodeId) -> Vec<Vec<(NodeId, Edge)>> {
-        let mut paths = Vec::new();
+        let mut all_paths: Vec<Vec<(NodeId, Edge)>> = Vec::new();
+        let mut stack: Vec<(NodeId, Vec<(NodeId, Edge)>)> = Vec::new();
 
-        let mut stack: Vec<(NodeId, Vec<(NodeId, Edge)>)> =
-            vec![(entry, vec![(entry, Edge::True)])];
+        stack.push((entry, Vec::new()));
 
-        while let Some((node_id, path_so_far)) = stack.pop() {
-            match graph.get(&node_id) {
-                Some(Node::Cond { succ, .. }) => {
-                    // ---- FALSE branch first (so TRUE is popped/visited first) ----
-                    let mut path_false = path_so_far.clone();
-                    path_false.push((succ[1], Edge::False));
-                    stack.push((succ[1], path_false));
+        while let Some((current_node_id, path_so_far)) = stack.pop() {
+            if let Some(node) = graph.get(&current_node_id) {
+                match node {
+                    Node::Cond { succ, .. } => {
+                        let mut path = path_so_far.clone();
+                        path.push((current_node_id, Edge::False));
+                        stack.push((succ[1], path));
 
-                    // ---- TRUE branch ----
-                    let mut path_true = path_so_far;
-                    path_true.push((succ[0], Edge::True));
-                    stack.push((succ[0], path_true));
+                        let mut path = path_so_far;
+                        path.push((current_node_id, Edge::True));
+                        stack.push((succ[0], path));
+                    }
+                    Node::Return { .. } | Node::Raise { .. } => {
+                        let mut completed_path = path_so_far;
+                        completed_path.push((current_node_id, Edge::Terminal));
+                        all_paths.push(completed_path);
+                    }
                 }
-
-                // Any terminal node ends a path.
-                Some(Node::Return { .. }) | Some(Node::Raise { .. }) => {
-                    paths.push(path_so_far);
-                }
-
-                _ => {} // unreachable / malformed graph entry
             }
         }
-
-        paths
+        all_paths
     }
 }

@@ -45,8 +45,9 @@ pub enum Node {
 /// Represents a binary decision edge in the control flow graph.
 #[derive(Clone, Debug)]
 pub enum Edge {
-    True,  // TRUE edge (0)
-    False, // FALSE edge (1)
+    True,     // TRUE edge (0)
+    False,    // FALSE edge (1)
+    Terminal, // Terminal edge for exit nodes (return, raise)
 }
 
 /// Represents a control flow graph for a Python function.
@@ -151,6 +152,9 @@ impl ControlFlowGraph {
                             match edge {
                                 Edge::True => succ[0] = node_id,  // Connect TRUE edge
                                 Edge::False => succ[1] = node_id, // Connect FALSE edge
+                                Edge::Terminal => continue, // Terminal edges represent exit points (e.g., return, raise) 
+                                                            // and are not connected to decision nodes because they 
+                                                            // signify the end of a control flow path.
                             }
                         }
                         _ => continue, // Only decision nodes have successors

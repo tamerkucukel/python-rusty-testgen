@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use crate::cfg::{ControlFlowGraph, Edge, Node, NodeId};
 
-pub struct Explorer;
+pub struct PathScraper;
 
-impl Explorer {
+impl PathScraper {
     /// Returns all paths in the control flow graph as a vector of vectors.
     pub fn get_paths(control_flow_graph: &ControlFlowGraph) -> Option<Vec<Vec<(NodeId, Edge)>>> {
         let paths = Self::traverse(
@@ -16,6 +16,31 @@ impl Explorer {
             None
         } else {
             Some(paths)
+        }
+    }
+
+    /// Prints all paths in the control flow graph in a readable format.
+    pub fn print_paths(control_flow_graph: &ControlFlowGraph) {
+        match Self::get_paths(control_flow_graph) {
+            Some(paths) => {
+                println!("=== CONTROL FLOW GRAPH PATHS ===");
+                println!("Total paths found: {}", paths.len());
+                println!();
+
+                for (i, path) in paths.iter().enumerate() {
+                    println!("Path {}: {:?}", i, path);
+                }
+                println!();
+            }
+            None => {
+                println!("No paths found in the control flow graph.");
+            }
+        }
+
+        // Print the control flow graph nodes
+        println!("=== CONTROL FLOW GRAPH NODES ===");
+        for (node_id, node) in control_flow_graph.get_graph() {
+            println!("Node ID: {}, Node: {:#?}", node_id, node);
         }
     }
 

@@ -9,7 +9,9 @@
 // Compile with: cargo add rustpython-ast = "0.4"
 //
 // ──────────────────────────────────────────────────────────────────────────────
-use rustpython_ast::{Expr, StmtFunctionDef, StmtIf, StmtRaise, StmtReturn, StmtWhile, Visitor};
+use rustpython_ast::{
+    Arg, Arguments, Expr, StmtFunctionDef, StmtIf, StmtRaise, StmtReturn, StmtWhile, Visitor,
+}; // Added Arg, Arguments
 
 use std::collections::HashMap;
 // ──────────────────────────────────────────────────────────────────────────────
@@ -56,6 +58,7 @@ pub struct ControlFlowGraph {
     entry: NodeId,
     graph: HashMap<NodeId, Node>,
     frontier_stack: Vec<(NodeId, Edge)>, // pred edges waiting to connect to next node with scope status.
+    arguments: Vec<(String, Option<String>)>, // Stores (arg_name, type_hint_string)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -67,6 +70,7 @@ impl ControlFlowGraph {
             graph: HashMap::new(),
             entry: 0, // The entry node ID is 0, which is the first node added to the graph.
             frontier_stack: Vec::new(),
+            arguments: Vec::new(),
         }
     }
 
@@ -85,6 +89,11 @@ impl ControlFlowGraph {
         &self.graph
     }
 
+    /// Returns a reference to the function's arguments (name, type_hint_string).
+    pub fn get_arguments(&self) -> &Vec<(String, Option<String>)> {
+        &self.arguments
+    }
+
     /// Returns the entry node ID of the control flow graph.
     pub fn get_node(&self, id: NodeId) -> Option<&Node> {
         self.graph.get(&id)
@@ -98,41 +107,6 @@ impl ControlFlowGraph {
     /// Returns a mutable reference to a node in the graph by its ID.
     pub fn get_node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
         self.graph.get_mut(&id)
-    }
-
-    /// Prints all paths in the control flow graph.
-    pub fn print_paths(&self) {
-        let mut current_path = Vec::new();
-
-        fn print_path(
-            graph: &ControlFlowGraph,
-            node_id: NodeId,
-            current_path: &mut Vec<(NodeId, Edge)>,
-        ) {
-            if let Some(node) = graph.get_node(node_id) {
-                match node {
-                    Node::Cond { succ, .. } => {
-                        // Traverse TRUE edge first
-                        current_path.push((node_id, Edge::True));
-                        print_path(graph, succ[0], current_path);
-                        current_path.pop(); // Pop TRUE edge
-
-                        // Then FALSE edge
-                        current_path.push((node_id, Edge::False));
-                        print_path(graph, succ[1], current_path);
-                        current_path.pop(); // Pop FALSE edge
-                    }
-                    Node::Return { .. } | Node::Raise { .. } => {
-                        // Print the path when reaching an exit node
-                        current_path.push((node_id, Edge::True)); // Mark the exit node
-                        println!("Path: {:?}", current_path);
-                        current_path.pop(); // Pop the exit node marking
-                    }
-                }
-            }
-        }
-        print_path(self, self.entry, &mut current_path);
-        println!("Nodes in the graph: {:#?}", self.graph);
     }
 
     /// Adds a new node to the control flow graph and returns its ID.
@@ -152,8 +126,8 @@ impl ControlFlowGraph {
                             match edge {
                                 Edge::True => succ[0] = node_id,  // Connect TRUE edge
                                 Edge::False => succ[1] = node_id, // Connect FALSE edge
-                                Edge::Terminal => continue, // Terminal edges represent exit points (e.g., return, raise) 
-                                                            // and are not connected to decision nodes because they 
+                                Edge::Terminal => continue, // Terminal edges represent exit points (e.g., return, raise)
+                                                            // and are not connected to decision nodes because they
                                                             // signify the end of a control flow path.
                             }
                         }
@@ -163,6 +137,44 @@ impl ControlFlowGraph {
             }
         }
     }
+
+    /// Helper to extract argument names and type hints.
+    fn extract_function_arguments(&mut self, args: &Arguments) {
+        // Process positional-only arguments
+        for arg_with_default in &args.posonlyargs {
+            self.add_argument(&arg_with_default.def);
+        }
+        // Process regular arguments
+        for arg_with_default in &args.args {
+            self.add_argument(&arg_with_default.def);
+        }
+        // Process vararg
+        if let Some(vararg) = &args.vararg {
+            self.add_argument(vararg);
+        }
+        // Process keyword-only arguments
+        for arg_with_default in &args.kwonlyargs {
+            self.add_argument(&arg_with_default.def);
+        }
+        // Process kwarg
+        if let Some(kwarg) = &args.kwarg {
+            self.add_argument(kwarg);
+        }
+    }
+
+    fn add_argument(&mut self, arg: &Arg) {
+        let name = arg.arg.to_string();
+        let type_hint = arg.annotation.as_ref().and_then(|ann_expr| {
+            if let Expr::Name(name_expr) = &**ann_expr {
+                Some(name_expr.id.to_string())
+            } else {
+                // For now, only simple Name annotations like "int", "bool" are parsed.
+                // More complex annotations (e.g., `typing.List[int]`) would require deeper parsing.
+                None
+            }
+        });
+        self.arguments.push((name, type_hint));
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -170,35 +182,66 @@ impl ControlFlowGraph {
 // ──────────────────────────────────────────────────────────────────────────────
 
 impl Visitor for ControlFlowGraph {
+    fn visit_stmt_function_def(&mut self, node: StmtFunctionDef) {
+        // Extract arguments and their type hints
+        self.extract_function_arguments(&node.args);
+        self.generic_visit_stmt_function_def(node);
+    }
+
     fn generic_visit_stmt_if(&mut self, node: StmtIf) {
+        // Clone the test expression for the Node::Cond, as node.test will be consumed by self.visit_expr.
+        let test_expr_for_cond_node = *node.test.clone();
+
         // Create a new decision node for the `if` statement
         let cond_node = Node::Cond {
-            expr: *node.test.clone(),
-            succ: [0, 0],
+            expr: test_expr_for_cond_node,
+            succ: [0, 0], // Successors will be determined by connect_frontier calls
+                          // from statements within the branches or by fall-through logic.
         };
         // Add the decision node to the graph
         let cond_node_id = self.add_node(cond_node);
-        // Connect previous edges to the node in the frontier.
+        // Connect previous edges from the frontier_stack to this new `if` node.
+        // After this, self.frontier_stack should be empty.
         self.connect_frontier(cond_node_id);
 
-        // Visit the condition expression
-        {
-            let value = node.test;
-            self.visit_expr(*value);
-        }
+        // Visit the condition expression (original code had this, possibly for other analysis).
+        // This consumes node.test.
+        self.visit_expr(*node.test);
 
-        // Add true edge of the current node to the frontier stack
+        // --- True Branch ---
+        // The frontier for the true branch's body is solely the True edge from cond_node_id.
+        // self.frontier_stack is expected to be empty after connect_frontier(cond_node_id).
         self.frontier_stack.push((cond_node_id, Edge::True));
-
-        for value in node.body {
-            self.visit_stmt(value);
+        for stmt in node.body {
+            // node.body is Vec<Stmt>, stmt is Stmt (moved)
+            self.visit_stmt(stmt);
         }
-        // Add false edge of the current node to the frontier stack
+        // After visiting the body, self.frontier_stack contains all fall-through paths from the true branch.
+        let true_fallthroughs = self.frontier_stack.clone();
+        self.frontier_stack.clear(); // Clear before processing the false branch
+
+        // --- False Branch (orelse) ---
+        // The frontier for the orelse branch's body is solely the False edge from cond_node_id.
         self.frontier_stack.push((cond_node_id, Edge::False));
-
-        for value in node.orelse {
-            self.visit_stmt(value);
+        if node.orelse.is_empty() {
+            // No explicit orelse block. The (cond_node_id, Edge::False) edge itself is a fall-through path.
+            // It's currently in self.frontier_stack and will be captured by false_fallthroughs.
+        } else {
+            for stmt in node.orelse {
+                // node.orelse is Vec<Stmt>, stmt is Stmt (moved)
+                self.visit_stmt(stmt);
+            }
         }
+        // After visiting orelse (or if orelse was empty and (cond_node_id, Edge::False) remained),
+        // self.frontier_stack contains all fall-through paths from the false branch.
+        let false_fallthroughs = self.frontier_stack.clone();
+        self.frontier_stack.clear(); // Clear before combining fall-throughs
+
+        // --- Combine fall-throughs ---
+        // The new frontier_stack for statements *after* this if-elif-else block
+        // consists of fall-throughs from the true branch and fall-throughs from the false branch.
+        self.frontier_stack.extend(true_fallthroughs);
+        self.frontier_stack.extend(false_fallthroughs);
     }
 
     fn generic_visit_stmt_while(&mut self, node: StmtWhile) {
@@ -250,5 +293,4 @@ impl Visitor for ControlFlowGraph {
         self.connect_frontier(raise_node_id);
     }
 }
-
 // ──────────────────────────────────────────────────────────────────────────────

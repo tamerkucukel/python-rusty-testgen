@@ -1,5 +1,5 @@
 // error module
-mod error;
+pub(crate) mod error;
 // explorer module
 mod explorer;
 

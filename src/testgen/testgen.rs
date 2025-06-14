@@ -134,10 +134,14 @@ impl PytestGenerator {
         let call_stmt = format!("{}({})", original_function_name, func_args_str);
 
         match terminal_node {
-            Node::Return { stmt: opt_expr_stmt } => {
+            Node::Return {
+                stmt: opt_expr_stmt,
+            } => {
                 if let Some(expr) = &opt_expr_stmt.value {
                     match expr.as_ref() {
-                        Expr::Constant(ExprConstant { value: const_val, .. }) => {
+                        Expr::Constant(ExprConstant {
+                            value: const_val, ..
+                        }) => {
                             let expected_value_str = Self::format_python_constant(const_val);
                             test_body_lines.push(format!(
                                 "    assert {} == {}",
@@ -146,10 +150,13 @@ impl PytestGenerator {
                         }
                         _ => {
                             test_body_lines.push(format!(
-                                "    # Path returns a non-constant expression: {:?}", expr
+                                "    # Path returns a non-constant expression: {:?}",
+                                expr
                             ));
                             test_body_lines.push(format!("    returnValue = {}", call_stmt));
-                            test_body_lines.push("    # TODO: Add manual assertion for returnValue".to_string());
+                            test_body_lines.push(
+                                "    # TODO: Add manual assertion for returnValue".to_string(),
+                            );
                         }
                     }
                 } else {
@@ -165,9 +172,12 @@ impl PytestGenerator {
                         }
                         _ => {
                             test_body_lines.push(format!(
-                                "    # Path raises a non-Name exception: {:?}", exc_expr
+                                "    # Path raises a non-Name exception: {:?}",
+                                exc_expr
                             ));
-                            test_body_lines.push("    with pytest.raises(Exception): # Generic check".to_string());
+                            test_body_lines.push(
+                                "    with pytest.raises(Exception): # Generic check".to_string(),
+                            );
                             test_body_lines.push(format!("        {}", call_stmt));
                         }
                     }

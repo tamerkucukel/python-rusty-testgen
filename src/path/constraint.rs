@@ -1,6 +1,21 @@
 use crate::cfg::{ControlFlowGraph, Edge, Node, NodeId};
 use rustpython_ast::{
-    BoolOp, CmpOp, Constant, Expr, ExprBoolOp, ExprCompare, ExprConstant, ExprName, ExprUnaryOp,
+    BoolOp,
+    CmpOp,
+    Constant,
+    Expr,
+    ExprBoolOp,
+    ExprCompare,
+    ExprConstant,
+    ExprContext, // Correct for rustpython-ast 0.4.0
+    ExprName,
+    ExprUnaryOp,
+    Operator, // This is the correct type for BinOp.op and AugAssign.op
+    Stmt,
+    StmtAssert,
+    StmtAssign,
+    StmtAugAssign, // Make sure StmtAugAssign is imported
+    StmtExpr,
     UnaryOp,
 };
 use std::collections::HashMap;
@@ -204,43 +219,211 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
         }
     }
 
-    /// Generates a single Z3 boolean AST representing all constraints for a given path.
+    /// Converts a Python expression to a Z3 Dynamic AST.
+    fn python_expr_to_z3_dynamic(&mut self, expr: &Expr) -> Result<Dynamic<'cfg>, Z3Error> {
+        // Attempt to convert to Bool first
+        if let Ok(b_val) = self.python_expr_to_z3_bool(expr) {
+            return Ok(Dynamic::from_ast(&b_val));
+        }
+        // Then attempt to convert to Int
+        if let Ok(i_val) = self.python_expr_to_z3_int(expr) {
+            return Ok(Dynamic::from_ast(&i_val));
+        }
+        // Handle binary operations if not directly bool/int constants/names
+        if let Expr::BinOp(bin_op_expr) = expr {
+            let left_val = self.python_expr_to_z3_int(&bin_op_expr.left)?;
+            let right_val = self.python_expr_to_z3_int(&bin_op_expr.right)?;
+            match bin_op_expr.op {
+                Operator::Add => {
+                    return Ok(Dynamic::from_ast(&Int::add(
+                        self.z3_ctx,
+                        &[&left_val, &right_val],
+                    )))
+                }
+                Operator::Sub => {
+                    return Ok(Dynamic::from_ast(&Int::sub(
+                        self.z3_ctx,
+                        &[&left_val, &right_val],
+                    )))
+                }
+                Operator::Mult => {
+                    return Ok(Dynamic::from_ast(&Int::mul(
+                        self.z3_ctx,
+                        &[&left_val, &right_val],
+                    )))
+                }
+                // Add other BinOp types as needed (Div, Mod, Pow, etc.)
+                _ => {
+                    return Err(Z3Error::UnsupportedExpressionType {
+                        expr_repr: format!("Unsupported binary operator: {:?}", bin_op_expr.op),
+                    })
+                }
+            }
+        }
+        Err(Z3Error::UnsupportedExpressionType {
+            expr_repr: format!("Cannot convert to Z3 Dynamic: {:?}", expr),
+        })
+    }
+
+    /// Processes a single Python statement and adds corresponding Z3 assertions.
+    /// Updates the variable_map for assignments.
+    fn process_statement_for_z3(
+        &mut self,
+        stmt: &Stmt,
+        assertions: &mut Vec<Bool<'cfg>>,
+    ) -> Result<(), Z3Error> {
+        match stmt {
+            Stmt::Assign(StmtAssign { targets, value, .. }) => {
+                if targets.len() == 1 {
+                    if let Expr::Name(ExprName { id, ctx, .. }) = &targets[0] {
+                        if matches!(ctx, ExprContext::Store) {
+                            let target_name = id.to_string();
+                            let z3_rhs_value = self.python_expr_to_z3_dynamic(value)?;
+
+                            // Create a NEW Z3 variable for the LHS to represent its state *after* this assignment.
+                            // The name for Z3 can be made unique, e.g., by appending a counter or using fresh_const.
+                            // For simplicity with fresh_const, we can use a base name.
+                            let new_lhs_z3_var = match z3_rhs_value.get_sort().kind() {
+                                z3::SortKind::Bool => {
+                                    Dynamic::from_ast(&Bool::fresh_const(self.z3_ctx, &format!("{}_val", target_name)))
+                                }
+                                z3::SortKind::Int => {
+                                    Dynamic::from_ast(&Int::fresh_const(self.z3_ctx, &format!("{}_val", target_name)))
+                                }
+                                _ => {
+                                    return Err(Z3Error::TypeConversion(
+                                        "Unsupported Z3 sort for assignment target's new value".to_string(),
+                                    ))
+                                }
+                            };
+
+                            assertions.push(new_lhs_z3_var._eq(&z3_rhs_value));
+                            // Update variable_map so 'target_name' now maps to this new Z3 variable.
+                            self.variable_map.insert(target_name, new_lhs_z3_var);
+                        }
+                    }
+                    // TODO: Handle other assignment targets (e.g., attributes, subscripts)
+                }
+                // TODO: Handle multiple assignment targets (e.g., a, b = 1, 2)
+            }
+            Stmt::AugAssign(StmtAugAssign { target, op, value, .. }) => {
+                if let Expr::Name(ExprName { id, ctx, .. }) = target.as_ref() {
+                    if matches!(ctx, ExprContext::Store) {
+                        let target_name = id.to_string();
+
+                        // 1. Evaluate current value of target (T_k) using current variable_map
+                        let lhs_current_z3_val = self.python_expr_to_z3_dynamic(target)?;
+
+                        // 2. Evaluate RHS value (V) using current variable_map
+                        let rhs_z3_val = self.python_expr_to_z3_dynamic(value)?;
+
+                        // 3. Compute result: Res_val = T_k op V
+                        let result_val_z3_ast = match op {
+                            Operator::Add => {
+                                let l = lhs_current_z3_val.as_int().ok_or_else(|| Z3Error::TypeMismatch { variable_name: target_name.clone(), expected_type: "Int".to_string() })?;
+                                let r = rhs_z3_val.as_int().ok_or_else(|| Z3Error::TypeMismatch { variable_name: "rhs".to_string(), expected_type: "Int".to_string() })?;
+                                Int::add(self.z3_ctx, &[&l, &r])
+                            }
+                            Operator::Sub => {
+                                let l = lhs_current_z3_val.as_int().ok_or_else(|| Z3Error::TypeMismatch { variable_name: target_name.clone(), expected_type: "Int".to_string() })?;
+                                let r = rhs_z3_val.as_int().ok_or_else(|| Z3Error::TypeMismatch { variable_name: "rhs".to_string(), expected_type: "Int".to_string() })?;
+                                Int::sub(self.z3_ctx, &[&l, &r])
+                            }
+                            // Add other Operator cases (Mult, Div, etc.) as needed
+                            _ => return Err(Z3Error::UnsupportedExpressionType { expr_repr: format!("Unsupported AugAssign operator: {:?}", op) })
+                        };
+                        let result_val_dynamic = Dynamic::from_ast(&result_val_z3_ast);
+
+                        // 4. Create new Z3 var for target's next state (T_k+1)
+                        let new_lhs_z3_var = match result_val_dynamic.get_sort().kind() {
+                             z3::SortKind::Bool => Dynamic::from_ast(&Bool::fresh_const(self.z3_ctx, &format!("{}_val_aug", target_name))),
+                             z3::SortKind::Int => Dynamic::from_ast(&Int::fresh_const(self.z3_ctx, &format!("{}_val_aug", target_name))),
+                             _ => return Err(Z3Error::TypeConversion("Unsupported Z3 sort for aug-assignment target's new value".to_string())),
+                        };
+
+                        // 5. Assert T_k+1 == Res_val
+                        assertions.push(new_lhs_z3_var._eq(&result_val_dynamic));
+
+                        // 6. Update map: target_name -> T_k+1
+                        self.variable_map.insert(target_name, new_lhs_z3_var);
+                    }
+                }
+            }
+            Stmt::Expr(StmtExpr { value, .. }) => {
+                if let Expr::Call(call_expr) = value.as_ref() {
+                    if let Expr::Name(name_expr) = call_expr.func.as_ref() {
+                        if name_expr.id.as_str() == "assert" && !call_expr.args.is_empty() {
+                            let condition = self.python_expr_to_z3_bool(&call_expr.args[0])?;
+                            assertions.push(condition);
+                        }
+                    }
+                }
+            }
+            Stmt::Assert(StmtAssert { test, .. }) => {
+                let condition = self.python_expr_to_z3_bool(test)?;
+                assertions.push(condition);
+            }
+            Stmt::Pass(_) => {
+                // No Z3 assertion for pass
+            }
+            _ => {
+                // Optionally log or error for unsupported statements
+            }
+        }
+        Ok(())
+    }
+
     fn create_path_assertion(
         &mut self,
         path: &[(NodeId, Edge)],
         cfg_data: &ControlFlowGraph,
     ) -> Result<Bool<'cfg>, Z3Error> {
-        let mut path_constraints: Vec<Bool<'cfg>> = Vec::new();
+        let mut path_assertions: Vec<Bool<'cfg>> = Vec::new();
 
         for (node_id, edge) in path {
-            if matches!(edge, Edge::Terminal) {
-                if let Some(node_type) = cfg_data.get_node(*node_id) {
-                    if matches!(node_type, Node::Return { .. } | Node::Raise { .. }) {
-                        continue; // Terminal nodes themselves don't add constraints.
-                    }
-                }
-            }
-
             let node = cfg_data
                 .get_node(*node_id)
                 .ok_or(Z3Error::NodeNotFoundInCfg(*node_id))?;
 
-            if let Node::Cond { expr, .. } = node {
-                let condition_ast = self.python_expr_to_z3_bool(expr)?;
-                match edge {
-                    Edge::True => path_constraints.push(condition_ast),
-                    Edge::False => path_constraints.push(condition_ast.not()),
-                    Edge::Terminal => {}
+            let stmts_to_process: &Vec<Stmt>;
+            let mut condition_expr_opt: Option<&Expr> = None;
+
+            match node {
+                Node::Cond { stmts, expr, .. } => {
+                    stmts_to_process = stmts;
+                    condition_expr_opt = Some(expr);
+                }
+                Node::Return { stmts, .. } | Node::Raise { stmts, .. } => {
+                    stmts_to_process = stmts;
                 }
             }
+
+            for stmt in stmts_to_process {
+                self.process_statement_for_z3(stmt, &mut path_assertions)?;
+            }
+
+            if let Some(condition_expr) = condition_expr_opt {
+                if let Node::Cond { .. } = node {
+                    // Ensure it's actually a Cond node for edge processing
+                    let condition_ast = self.python_expr_to_z3_bool(condition_expr)?;
+                    match edge {
+                        Edge::True => path_assertions.push(condition_ast),
+                        Edge::False => path_assertions.push(condition_ast.not()),
+                        Edge::Terminal => { /* Terminal edge on Cond node is unusual, implies path ends mid-condition */
+                        }
+                    }
+                }
+            }
+            // For Return/Raise nodes, their `stmts` are processed, and the path ends.
+            // The `Edge::Terminal` itself doesn't add a Z3 condition from the node's expression.
         }
-        if path_constraints.is_empty() {
-            // An empty path or a path with no conditions is considered satisfiable by default.
+
+        if path_assertions.is_empty() {
             Ok(Bool::from_bool(self.z3_ctx, true))
         } else {
             Ok(Bool::and(
                 self.z3_ctx,
-                &path_constraints.iter().collect::<Vec<_>>(),
+                &path_assertions.iter().collect::<Vec<_>>(),
             ))
         }
     }

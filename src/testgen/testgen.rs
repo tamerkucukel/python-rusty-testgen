@@ -1,6 +1,6 @@
 use crate::cfg::{ControlFlowGraph, Edge, Node, NodeId};
 use crate::path::PathConstraintResult;
-use rustpython_ast::{Constant, Expr, ExprConstant, ExprName};
+use rustpython_ast::{Constant, Expr, ExprConstant, ExprName}; // StmtReturn, StmtRaise are part of rustpython_ast but not directly used at this top level
 use std::collections::HashMap;
 
 pub struct PytestGenerator;
@@ -53,12 +53,10 @@ impl PytestGenerator {
         match constant {
             Constant::Int(i) => i.to_string(),
             Constant::Bool(b) => if *b { "True" } else { "False" }.to_string(),
-            Constant::Str(s) => {
+            Constant::Str(s_val) => {
+                // s_val is String
                 // Basic string formatting, escaping double quotes and backslashes
-                format!(
-                    "\"{}\"",
-                    s.to_string().replace('\\', "\\\\").replace('\"', "\\\"")
-                )
+                format!("\"{}\"", s_val.replace('\\', "\\\\").replace('\"', "\\\""))
             }
             Constant::Float(f) => f.to_string(),
             Constant::Complex { real, imag } => format!("complex({}, {})", real, imag),
@@ -80,9 +78,7 @@ impl PytestGenerator {
                 repr.push('\"');
                 repr
             }
-            _ => {
-                format!("# Unsupported constant value: {:?}", constant)
-            }
+            Constant::Tuple(constants) => todo!(),
         }
     }
 
@@ -98,6 +94,7 @@ impl PytestGenerator {
         let mut args_list = Vec::new();
 
         // Iterate through the original function arguments to ensure all are present
+        // and provide placeholders if not in Z3 model.
         for (arg_name, type_hint_opt) in cfg.get_arguments() {
             let py_value = if let Some(model_value_str) = model_assignments.get(arg_name) {
                 // Value found in Z3 model
@@ -125,20 +122,24 @@ impl PytestGenerator {
         let func_args_str = args_list.join(", ");
 
         let (terminal_node_id, _edge_from_terminal) = match path.last() {
-            Some(last_step) => last_step,
-            None => return None,
+            Some(last_step) => last_step.clone(),
+            None => return None, // Path is empty
         };
 
-        let terminal_node = cfg.get_node(*terminal_node_id)?;
+        let terminal_node = cfg.get_node(terminal_node_id)?;
         let mut test_body_lines = Vec::new();
         let call_stmt = format!("{}({})", original_function_name, func_args_str);
 
         match terminal_node {
             Node::Return {
-                stmt: opt_expr_stmt,
+                stmts: _,
+                stmt: return_stmt,
             } => {
-                if let Some(expr) = &opt_expr_stmt.value {
-                    match expr.as_ref() {
+                // Access the StmtReturn directly
+                if let Some(expr_box) = &return_stmt.value {
+                    // StmtReturn.value is Option<Box<Expr>>
+                    match expr_box.as_ref() {
+                        // Dereference Box<Expr> to &Expr
                         Expr::Constant(ExprConstant {
                             value: const_val, ..
                         }) => {
@@ -151,7 +152,7 @@ impl PytestGenerator {
                         _ => {
                             test_body_lines.push(format!(
                                 "    # Path returns a non-constant expression: {:?}",
-                                expr
+                                expr_box
                             ));
                             test_body_lines.push(format!("    returnValue = {}", call_stmt));
                             test_body_lines.push(
@@ -160,12 +161,19 @@ impl PytestGenerator {
                         }
                     }
                 } else {
+                    // Return None (value is None in StmtReturn)
                     test_body_lines.push(format!("    assert {} is None", call_stmt));
                 }
             }
-            Node::Raise { stmt: opt_exc_stmt } => {
-                if let Some(exc_expr) = &opt_exc_stmt.exc {
-                    match exc_expr.as_ref() {
+            Node::Raise {
+                stmts: _,
+                stmt: raise_stmt,
+            } => {
+                // Access the StmtRaise directly
+                if let Some(exc_expr_box) = &raise_stmt.exc {
+                    // StmtRaise.exc is Option<Box<Expr>>
+                    match exc_expr_box.as_ref() {
+                        // Dereference Box<Expr> to &Expr
                         Expr::Name(ExprName { id, .. }) => {
                             test_body_lines.push(format!("    with pytest.raises({}):", id));
                             test_body_lines.push(format!("        {}", call_stmt));
@@ -173,7 +181,7 @@ impl PytestGenerator {
                         _ => {
                             test_body_lines.push(format!(
                                 "    # Path raises a non-Name exception: {:?}",
-                                exc_expr
+                                exc_expr_box
                             ));
                             test_body_lines.push(
                                 "    with pytest.raises(Exception): # Generic check".to_string(),
@@ -182,12 +190,13 @@ impl PytestGenerator {
                         }
                     }
                 } else {
+                    // Bare raise (exc is None in StmtRaise)
                     test_body_lines.push("    # Path involves a bare 'raise'".to_string());
                     test_body_lines.push("    with pytest.raises(Exception): # Generic check for any re-raised exception".to_string());
                     test_body_lines.push(format!("        {}", call_stmt));
                 }
             }
-            Node::Cond { .. } => return None,
+            Node::Cond { .. } => return None, // Path should not end on a Cond node
         }
 
         if test_body_lines.is_empty() {
@@ -199,7 +208,7 @@ impl PytestGenerator {
             original_function_name.replace(" ", "_").to_lowercase(),
             path_index
         );
-        let mut fn_string = format!("def {}():\n", test_function_name);
+        let mut fn_string = format!("def {}():\n", test_function_name); // Test function takes no parameters
         for line in test_body_lines {
             fn_string.push_str(&line);
             fn_string.push('\n');
@@ -242,7 +251,7 @@ impl PytestGenerator {
                                 path_result.path_index,
                                 model_str,
                                 current_path_nodes_edges,
-                                cfg, // Pass the cfg here
+                                cfg,
                             ) {
                                 test_file_content.push_str(&test_fn_str);
                                 test_file_content.push_str("\n\n");

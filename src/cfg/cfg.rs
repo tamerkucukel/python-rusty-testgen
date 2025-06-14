@@ -10,8 +10,22 @@
 //
 // ──────────────────────────────────────────────────────────────────────────────
 use rustpython_ast::{
-    Arg, Arguments, Expr, StmtFunctionDef, StmtIf, StmtRaise, StmtReturn, StmtWhile, Visitor,
-}; // Added Arg, Arguments
+    Arg,
+    Arguments,
+    Expr,
+    Stmt, // Added Stmt
+    StmtAssert,
+    StmtAssign,
+    StmtAugAssign,
+    StmtExpr,
+    StmtFunctionDef,
+    StmtIf,
+    StmtPass, // Added StmtAssert, StmtPass
+    StmtRaise,
+    StmtReturn,
+    StmtWhile,
+    Visitor,
+};
 
 use std::collections::HashMap;
 // ──────────────────────────────────────────────────────────────────────────────
@@ -31,15 +45,16 @@ pub type NodeId = usize;
 #[derive(Clone, Debug)]
 pub enum Node {
     Cond {
+        stmts: Vec<Stmt>, // Statements in the block leading to this condition
         expr: Expr,
-        succ: [NodeId; 2], // Decision edges (index 0 for TRUE, index 1 for FALSE), filled after visiting both branches
+        succ: [NodeId; 2],
     },
-    /// Exit node with a return or raise value.
     Return {
+        stmts: Vec<Stmt>, // Statements in the block leading to this return
         stmt: StmtReturn,
     },
-
     Raise {
+        stmts: Vec<Stmt>, // Statements in the block leading to this raise
         stmt: StmtRaise,
     },
 }
@@ -57,13 +72,11 @@ pub enum Edge {
 pub struct ControlFlowGraph {
     entry: NodeId,
     graph: HashMap<NodeId, Node>,
-    frontier_stack: Vec<(NodeId, Edge)>, // pred edges waiting to connect to next node with scope status.
-    arguments: Vec<(String, Option<String>)>, // Stores (arg_name, type_hint_string)
+    frontier_stack: Vec<(NodeId, Edge)>,
+    arguments: Vec<(String, Option<String>)>,
+    current_block_stmts: Vec<Stmt>, // Accumulator for current basic block
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Implementation of the ControlFlowGraph
-// ──────────────────────────────────────────────────────────────────────────────
 impl ControlFlowGraph {
     pub fn new() -> Self {
         Self {
@@ -71,6 +84,7 @@ impl ControlFlowGraph {
             entry: 0, // The entry node ID is 0, which is the first node added to the graph.
             frontier_stack: Vec::new(),
             arguments: Vec::new(),
+            current_block_stmts: Vec::new(),
         }
     }
 
@@ -175,6 +189,38 @@ impl ControlFlowGraph {
         });
         self.arguments.push((name, type_hint));
     }
+
+    // Modified add_node helpers to consume current_block_stmts
+    fn add_cond_node(&mut self, expr: Expr, succ: [NodeId; 2]) -> NodeId {
+        let id = self.graph.len(); // Determine ID before draining
+        let node = Node::Cond {
+            stmts: self.current_block_stmts.drain(..).collect(),
+            expr,
+            succ,
+        };
+        self.graph.insert(id, node);
+        id
+    }
+
+    fn add_return_node(&mut self, stmt: StmtReturn) -> NodeId {
+        let id = self.graph.len();
+        let node = Node::Return {
+            stmts: self.current_block_stmts.drain(..).collect(),
+            stmt,
+        };
+        self.graph.insert(id, node);
+        id
+    }
+
+    fn add_raise_node(&mut self, stmt: StmtRaise) -> NodeId {
+        let id = self.graph.len();
+        let node = Node::Raise {
+            stmts: self.current_block_stmts.drain(..).collect(),
+            stmt,
+        };
+        self.graph.insert(id, node);
+        id
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -183,114 +229,117 @@ impl ControlFlowGraph {
 
 impl Visitor for ControlFlowGraph {
     fn visit_stmt_function_def(&mut self, node: StmtFunctionDef) {
-        // Extract arguments and their type hints
+        self.current_block_stmts.clear(); // Ensure fresh start for function statements
         self.extract_function_arguments(&node.args);
-        self.generic_visit_stmt_function_def(node);
+        for stmt in node.body {
+            self.visit_stmt(stmt); // Process each statement in the function body
+        }
+        // After processing all statements, if current_block_stmts is not empty,
+        // it implies an implicit return. For simplicity, we currently rely on explicit
+        // return/raise to terminate paths and clear current_block_stmts.
+        // A more robust solution might add an implicit Node::Return here if needed.
     }
 
-    fn generic_visit_stmt_if(&mut self, node: StmtIf) {
-        // Clone the test expression for the Node::Cond, as node.test will be consumed by self.visit_expr.
-        let test_expr_for_cond_node = *node.test.clone();
+    // Override specific statement visitors to accumulate them or handle control flow
 
-        // Create a new decision node for the `if` statement
-        let cond_node = Node::Cond {
-            expr: test_expr_for_cond_node,
-            succ: [0, 0], // Successors will be determined by connect_frontier calls
-                          // from statements within the branches or by fall-through logic.
-        };
-        // Add the decision node to the graph
-        let cond_node_id = self.add_node(cond_node);
-        // Connect previous edges from the frontier_stack to this new `if` node.
-        // After this, self.frontier_stack should be empty.
+    fn visit_stmt_expr(&mut self, node: StmtExpr) {
+        self.current_block_stmts.push(Stmt::Expr(node.clone()));
+        self.generic_visit_stmt_expr(node);
+    }
+
+    fn visit_stmt_assign(&mut self, node: StmtAssign) {
+        self.current_block_stmts.push(Stmt::Assign(node.clone()));
+        self.generic_visit_stmt_assign(node);
+    }
+
+    fn visit_stmt_aug_assign(&mut self, node: StmtAugAssign) {
+        self.current_block_stmts.push(Stmt::AugAssign(node.clone()));
+        self.generic_visit_stmt_aug_assign(node);
+    }
+
+    fn visit_stmt_assert(&mut self, node: StmtAssert) {
+        self.current_block_stmts.push(Stmt::Assert(node.clone()));
+        self.generic_visit_stmt_assert(node);
+    }
+
+    // Control Flow Statement Visitors
+    // These methods will use add_cond_node, add_return_node, or add_raise_node,
+    // which internally drain self.current_block_stmts.
+
+    fn visit_stmt_if(&mut self, node: StmtIf) {
+        let test_expr_for_cond_node = *node.test.clone();
+        let cond_node_id = self.add_cond_node(test_expr_for_cond_node, [0, 0]); // Drains stmts before if
         self.connect_frontier(cond_node_id);
 
-        // Visit the condition expression (original code had this, possibly for other analysis).
-        // This consumes node.test.
-        self.visit_expr(*node.test);
+        self.visit_expr(*node.test); // Visit the condition expression itself
 
-        // --- True Branch ---
-        // The frontier for the true branch's body is solely the True edge from cond_node_id.
-        // self.frontier_stack is expected to be empty after connect_frontier(cond_node_id).
+        // True Branch
         self.frontier_stack.push((cond_node_id, Edge::True));
-        for stmt in node.body {
-            // node.body is Vec<Stmt>, stmt is Stmt (moved)
-            self.visit_stmt(stmt);
+        for stmt_in_body in node.body {
+            self.visit_stmt(stmt_in_body);
         }
-        // After visiting the body, self.frontier_stack contains all fall-through paths from the true branch.
         let true_fallthroughs = self.frontier_stack.clone();
-        self.frontier_stack.clear(); // Clear before processing the false branch
+        self.frontier_stack.clear();
 
-        // --- False Branch (orelse) ---
-        // The frontier for the orelse branch's body is solely the False edge from cond_node_id.
+        // False Branch (orelse)
         self.frontier_stack.push((cond_node_id, Edge::False));
-        if node.orelse.is_empty() {
-            // No explicit orelse block. The (cond_node_id, Edge::False) edge itself is a fall-through path.
-            // It's currently in self.frontier_stack and will be captured by false_fallthroughs.
-        } else {
-            for stmt in node.orelse {
-                // node.orelse is Vec<Stmt>, stmt is Stmt (moved)
-                self.visit_stmt(stmt);
+        if !node.orelse.is_empty() {
+            for stmt_in_orelse in node.orelse {
+                self.visit_stmt(stmt_in_orelse);
             }
         }
-        // After visiting orelse (or if orelse was empty and (cond_node_id, Edge::False) remained),
-        // self.frontier_stack contains all fall-through paths from the false branch.
         let false_fallthroughs = self.frontier_stack.clone();
-        self.frontier_stack.clear(); // Clear before combining fall-throughs
+        self.frontier_stack.clear();
 
-        // --- Combine fall-throughs ---
-        // The new frontier_stack for statements *after* this if-elif-else block
-        // consists of fall-throughs from the true branch and fall-throughs from the false branch.
+        // Combine fall-throughs
         self.frontier_stack.extend(true_fallthroughs);
         self.frontier_stack.extend(false_fallthroughs);
     }
 
-    fn generic_visit_stmt_while(&mut self, node: StmtWhile) {
-        // Create a new decision node for the `while` statement
-        let cond_node = Node::Cond {
-            expr: *node.test.clone(),
-            succ: [0, 0],
-        };
-        // Add the decision node to the graph
-        let cond_node_id = self.add_node(cond_node);
-        // Connect previous edges to the node in the frontier.
+    fn visit_stmt_while(&mut self, node: StmtWhile) {
+        // Simplified handling for `while` for now.
+        // The block before the `while` condition.
+        let test_expr_for_cond_node = *node.test.clone();
+        let cond_node_id = self.add_cond_node(test_expr_for_cond_node, [0, 0]);
+        self.connect_frontier(cond_node_id);
+        self.visit_expr(*node.test);
+
+        // True branch (loop body)
+        self.frontier_stack.push((cond_node_id, Edge::True));
+        for stmt_in_body in node.body {
+            self.visit_stmt(stmt_in_body);
+        }
+        // After loop body, paths connect back to the condition.
         self.connect_frontier(cond_node_id);
 
-        // Visit the condition expression
-        {
-            let value = node.test;
-            self.visit_expr(*value);
-        }
-
-        // Add true edge of the current node to the frontier stack
-        self.frontier_stack.push((cond_node_id, Edge::True));
-
-        for value in node.body {
-            self.visit_stmt(value);
-        }
-        // Add false edge of the current node to the frontier stack
+        // False branch (after loop or orelse)
+        // The frontier for "after loop" is the False edge from cond_node_id.
         self.frontier_stack.push((cond_node_id, Edge::False));
-
-        for value in node.orelse {
-            self.visit_stmt(value);
+        if !node.orelse.is_empty() {
+            for stmt_in_orelse in node.orelse {
+                self.visit_stmt(stmt_in_orelse);
+            }
         }
+        // The frontier_stack now contains paths exiting the loop (either from orelse or directly if orelse is empty).
     }
 
     fn visit_stmt_return(&mut self, node: StmtReturn) {
-        // Create an exit node for the `return` statement
-        let return_node = Node::Return { stmt: node.clone() };
-        // Add the exit node to the graph
-        let return_node_id = self.add_node(return_node);
-        // Connect previous edges to the node in the frontier.
+        let return_node_id = self.add_return_node(node.clone()); // Drains stmts before return
         self.connect_frontier(return_node_id);
+        if let Some(val) = &node.value {
+            self.visit_expr((**val).clone());
+        }
     }
 
     fn visit_stmt_raise(&mut self, node: StmtRaise) {
-        // Create an exit node for the `raise` statement
-        let raise_node = Node::Raise { stmt: node.clone() };
-        // Add the exit node to the graph
-        let raise_node_id = self.add_node(raise_node);
-        // Connect previous edges to the node in the frontier.
+        let raise_node_id = self.add_raise_node(node.clone()); // Drains stmts before raise
         self.connect_frontier(raise_node_id);
+        if let Some(exc) = &node.exc {
+            self.visit_expr((**exc).clone());
+        }
+        if let Some(cause) = &node.cause {
+            self.visit_expr((**cause).clone());
+        }
     }
 }
 // ──────────────────────────────────────────────────────────────────────────────

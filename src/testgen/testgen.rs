@@ -3,6 +3,7 @@ use crate::path::PathConstraintResult;
 use rustpython_ast::{Constant, Expr, ExprCall, ExprConstant, ExprName};
 use std::collections::HashMap;
 use std::fmt::Write;
+use std::ops::Deref;
 
 pub struct PytestGenerator;
 
@@ -10,6 +11,7 @@ const DEFAULT_PY_NONE: &str = "None";
 const DEFAULT_PY_INT: &str = "0";
 const DEFAULT_PY_BOOL: &str = "False";
 const DEFAULT_PY_STR: &str = "\"\"";
+const DEFAULT_PY_FLOAT: &str = "0.0";
 
 /// Holds the generated imports and test functions for a single Python function.
 pub struct GeneratedTestSuite {
@@ -38,7 +40,7 @@ impl PytestGenerator {
                     if core_parts.len() >= 4 && core_parts[1] == "()" {
                         let name = core_parts[0].to_string();
                         // Simplified negative number parsing and complex value handling.
-                        let value_str = if core_parts[3] == "(-"
+                        let mut value_str = if core_parts[3] == "(-"
                             && core_parts.len() >= 5
                             && core_parts[4].ends_with(')')
                         {
@@ -50,14 +52,41 @@ impl PytestGenerator {
                         } else {
                             core_parts[3].to_string()
                         };
+
+                        // Handle Z3 real output like "1.500000?" by stripping the '?'
+                        if value_str.ends_with('?') {
+                            value_str.pop();
+                        }
+                        // Rudimentary fraction handling: "(/ 3.0 2.0)" -> "1.5"
+                        // This is very basic and might need a proper math expression parser for complex cases.
+                        if value_str.starts_with("(/ ") && value_str.ends_with(')') && value_str.matches(' ').count() == 2 {
+                            let parts: Vec<&str> = value_str
+                                .strip_prefix("(/ ")
+                                .unwrap_or_default()
+                                .strip_suffix(')')
+                                .unwrap_or_default()
+                                .split_whitespace()
+                                .collect();
+                            if parts.len() == 2 {
+                                if let (Ok(num), Ok(den)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
+                                    if den != 0.0 {
+                                        value_str = (num / den).to_string();
+                                    }
+                                }
+                            }
+                        }
+
+
                         Some((name, value_str))
                     } else {
                         None
                     }
-                } else if trimmed_line.contains("->") {
+                } else if trimmed_line.contains("->") { // For simple assignments like "var -> val"
                     let parts: Vec<&str> = trimmed_line.split("->").map(str::trim).collect();
                     if parts.len() == 2 {
-                        Some((parts[0].to_string(), parts[1].to_string()))
+                        let mut value_part = parts[1].to_string();
+                        if value_part.ends_with('?') { value_part.pop(); }
+                        Some((parts[0].to_string(), value_part))
                     } else {
                         None
                     }
@@ -74,7 +103,7 @@ impl PytestGenerator {
             Constant::Bool(b) => if *b { "True" } else { "False" }.to_string(),
             Constant::Str(s_val) => {
                 // Escapes backslashes and double quotes for Python string literals.
-                format!("\"{}\"", s_val.replace('\\', "\\\\").replace('\"', "\\\""))
+                format!("\"{}\"", s_val.as_str().replace('\\', "\\\\").replace('\"', "\\\"")) // Use as_str()
             }
             Constant::Float(f) => f.to_string(),
             Constant::Complex { real, imag } => format!("complex({}, {})", real, imag),
@@ -98,14 +127,10 @@ impl PytestGenerator {
                 repr
             }
             _ => {
-                // Catch-all for unsupported Constant types.
-                // This should not happen with the current rustpython-ast version.
-                format!("Unsupported constant type: {:?}", constant)
+                // For any other constant type, we return a placeholder.
+                // This should not happen in well-formed ASTs.
+                format!("UnsupportedConstant({:?})", constant)
             }
-            // As per rustpython-ast 0.4.0, Constant::Tuple was removed.
-            // If other Constant variants are added in the future, this match will need to be updated.
-            // The previous refactoring added a catch-all `_` which is fine.
-            // For now, assuming the provided variants are exhaustive for the current library version.
         }
     }
 
@@ -127,7 +152,7 @@ impl PytestGenerator {
                     .map(|model_value_str| match model_value_str.as_str() {
                         "true" => "True".to_string(),
                         "false" => "False".to_string(),
-                        _ => model_value_str.clone(),
+                        _ => model_value_str.clone(), // Assumes Z3 output is Python-compatible literal
                     })
                     .unwrap_or_else(|| {
                         type_hint_opt
@@ -137,6 +162,7 @@ impl PytestGenerator {
                                     "int" => DEFAULT_PY_INT.to_string(),
                                     "bool" => DEFAULT_PY_BOOL.to_string(),
                                     "str" => DEFAULT_PY_STR.to_string(),
+                                    "float" => DEFAULT_PY_FLOAT.to_string(), // Added float default
                                     _ => DEFAULT_PY_NONE.to_string(),
                                 }
                             })
@@ -155,33 +181,38 @@ impl PytestGenerator {
         match terminal_node {
             Node::Return { stmts: _, stmt: return_stmt } => {
                 if let Some(expr_box) = &return_stmt.value {
-                    match expr_box.as_ref() {
+                    match &expr_box.deref() { // Use &expr_box.node
                         Expr::Constant(ExprConstant { value: const_val, .. }) => {
                             let expected_value_str = Self::format_python_constant(const_val);
                             test_body_lines.push(format!("    assert {} == {}", call_stmt, expected_value_str));
                         }
                         Expr::Name(ExprName { id, .. }) => {
-                            let returned_var_name = id.to_string();
+                            let returned_var_name = id.to_string(); // e.g., "mode"
                             let mut best_ssa_key: Option<String> = None;
                             let mut max_ssa_index: i32 = -1;
 
-                            // Find the latest SSA version of the returned variable in the model
-                            for (key, _value) in model_assignments.iter() {
-                                if key.starts_with(&returned_var_name) {
-                                    // Check for SSA pattern like "var_assigned_type!index"
-                                    // Example: key = "mode_assigned_str!1", returned_var_name = "mode"
-                                    // Prefix to check: "mode_assigned_"
-                                    let ssa_prefix_pattern = format!("{}_assigned_", returned_var_name);
-                                    if key.starts_with(&ssa_prefix_pattern) {
-                                        if let Some(pos_bang) = key.rfind('!') {
-                                            if pos_bang > ssa_prefix_pattern.len() -1 { // Ensure '!' is after the type part
-                                                let index_str = &key[(pos_bang + 1)..];
-                                                if let Ok(current_index) = index_str.parse::<i32>() {
-                                                    if current_index > max_ssa_index {
-                                                        max_ssa_index = current_index;
-                                                        best_ssa_key = Some(key.clone());
-                                                    }
-                                                }
+                            // Define the exact expected prefixes for SSA variables based on returned_var_name
+                            let ssa_prefix_expected_assigned = format!("{}_assigned", returned_var_name); // e.g., "mode_assigned"
+                            let ssa_prefix_expected_aug_assigned = format!("{}_aug_assigned", returned_var_name); // e.g., "mode_aug_assigned"
+
+                            for (key_from_model, _value) in model_assignments.iter() {
+                                // Example key_from_model: "mode_assigned!1"
+                                if let Some(pos_bang) = key_from_model.rfind('!') {
+                                    let prefix_in_key = &key_from_model[..pos_bang]; // e.g., "mode_assigned"
+                                    let index_str = &key_from_model[(pos_bang + 1)..];   // e.g., "1"
+
+                                    let mut is_matching_ssa_pattern = false;
+                                    if prefix_in_key == ssa_prefix_expected_assigned {
+                                        is_matching_ssa_pattern = true;
+                                    } else if prefix_in_key == ssa_prefix_expected_aug_assigned {
+                                        is_matching_ssa_pattern = true;
+                                    }
+
+                                    if is_matching_ssa_pattern {
+                                        if let Ok(current_index) = index_str.parse::<i32>() {
+                                            if current_index > max_ssa_index {
+                                                max_ssa_index = current_index;
+                                                best_ssa_key = Some(key_from_model.clone());
                                             }
                                         }
                                     }
@@ -189,12 +220,12 @@ impl PytestGenerator {
                             }
 
                             let mut found_value_for_assertion = false;
-                            if let Some(key_to_use) = best_ssa_key {
+                            if let Some(key_to_use) = best_ssa_key { // key_to_use would be "mode_assigned!1"
                                 if let Some(model_value_str) = model_assignments.get(&key_to_use) {
                                     let python_model_value = match model_value_str.as_str() {
                                         "true" => "True".to_string(),
                                         "false" => "False".to_string(),
-                                        _ => model_value_str.clone(), // Assumes it's already a Python literal string
+                                        _ => model_value_str.clone(), 
                                     };
                                     test_body_lines.push(format!("    returnValue = {}", call_stmt));
                                     test_body_lines.push(format!("    assert returnValue == {}", python_model_value));
@@ -224,7 +255,7 @@ impl PytestGenerator {
                             }
                         }
                         _ => {
-                            test_body_lines.push(format!("    # Path returns a non-constant expression: {:?}", expr_box));
+                            test_body_lines.push(format!("    # Path returns a non-constant expression: {:?}", expr_box.deref())); // Use .node
                             test_body_lines.push(format!("    returnValue = {}", call_stmt));
                             test_body_lines.push("    # TODO: Add manual assertion for returnValue".to_string());
                         }
@@ -235,10 +266,10 @@ impl PytestGenerator {
             }
             Node::Raise { stmts: _, stmt: raise_stmt } => {
                 let exception_name = if let Some(exc_expr_box) = &raise_stmt.exc {
-                    match exc_expr_box.as_ref() {
+                    match &exc_expr_box.deref() { // Use &exc_expr_box.node
                         Expr::Name(ExprName { id, .. }) => id.to_string(),
                         Expr::Call(ExprCall { func, .. }) => {
-                            if let Expr::Name(ExprName { id, .. }) = func.as_ref() {
+                            if let Expr::Name(ExprName { id, .. }) = &func.deref() { // Use &func.node
                                 id.to_string()
                             } else {
                                 "Exception".to_string()
@@ -251,7 +282,7 @@ impl PytestGenerator {
                 };
 
                 if exception_name == "Exception" && raise_stmt.exc.is_some() {
-                    test_body_lines.push(format!("    # Path raises a non-standard or complex exception: {:?}", raise_stmt.exc));
+                    test_body_lines.push(format!("    # Path raises a non-standard or complex exception: {:?}", raise_stmt.exc.as_ref())); // Use .node
                 } else if raise_stmt.exc.is_none() {
                      test_body_lines.push("    # Path involves a bare 'raise'".to_string());
                 }
@@ -259,7 +290,7 @@ impl PytestGenerator {
                 test_body_lines.push(format!("    with pytest.raises({}):", exception_name));
                 test_body_lines.push(format!("        {}", call_stmt));
             }
-            Node::Cond { .. } => return None,
+            Node::Cond { .. } => return None, // Should not happen as terminal node
         }
 
         if test_body_lines.is_empty() {

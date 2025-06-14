@@ -1,28 +1,23 @@
 use crate::cfg::{ControlFlowGraph, Edge, Node, NodeId};
 use crate::path::PathConstraintResult;
-// Added ExprCall for more detailed exception parsing
 use rustpython_ast::{Constant, Expr, ExprCall, ExprConstant, ExprName};
 use std::collections::HashMap;
-use std::fmt::Write; // Used for building strings efficiently
+use std::fmt::Write;
 
-/// `PytestGenerator` is responsible for generating pytest test file content
-/// based on analyzed execution paths of a Python function.
 pub struct PytestGenerator;
 
+const DEFAULT_PY_NONE: &str = "None";
+const DEFAULT_PY_INT: &str = "0";
+const DEFAULT_PY_BOOL: &str = "False";
+const DEFAULT_PY_STR: &str = "\"\"";
+
+/// Holds the generated imports and test functions for a single Python function.
+pub struct GeneratedTestSuite {
+    pub imports: Vec<String>,
+    pub test_functions: Vec<String>,
+}
+
 impl PytestGenerator {
-    /// Parses a Z3 model string into a map of variable assignments.
-    /// Made `pub(crate)` to be accessible from main.rs for formatted model printing.
-    ///
-    /// The Z3 model string typically contains lines defining functions (variables)
-    /// or direct mappings. This function handles common formats like:
-    /// - `(define-fun var_name () VarType value)`
-    /// - `var_name -> value`
-    ///
-    /// # Arguments
-    /// * `model_str`: A string slice representing the Z3 model output.
-    ///
-    /// # Returns
-    /// A `HashMap` where keys are variable names and values are their string representations.
     pub(crate) fn parse_z3_model(model_str: &str) -> HashMap<String, String> {
         // Replaced manual loop with iterator chain for conciseness and idiomatic Rust.
         model_str
@@ -73,13 +68,6 @@ impl PytestGenerator {
             .collect()
     }
 
-    /// Converts a `rustpython_ast::Constant` to its Python string representation.
-    ///
-    /// # Arguments
-    /// * `constant`: A reference to the `Constant` to format.
-    ///
-    /// # Returns
-    /// A `String` representing the Python literal.
     fn format_python_constant(constant: &Constant) -> String {
         match constant {
             Constant::Int(i) => i.to_string(),
@@ -121,17 +109,6 @@ impl PytestGenerator {
         }
     }
 
-    /// Generates a single pytest test function as a string.
-    ///
-    /// # Arguments
-    /// * `original_function_name`: Name of the Python function under test.
-    /// * `path_index`: Index of the current path, used for naming the test function.
-    /// * `model_str`: Z3 model string for the current path.
-    /// * `path`: The sequence of (NodeId, Edge) representing the current execution path.
-    /// * `cfg`: The `ControlFlowGraph` of the function.
-    ///
-    /// # Returns
-    /// An `Option<String>` containing the test function string, or `None` if a test cannot be generated.
     fn generate_test_function_string(
         original_function_name: &str,
         path_index: usize,
@@ -141,8 +118,6 @@ impl PytestGenerator {
     ) -> Option<String> {
         let model_assignments = Self::parse_z3_model(model_str);
         
-        // Build the argument list string for the function call.
-        // Uses placeholders for arguments not found in the Z3 model.
         let func_args_str = cfg
             .get_arguments()
             .iter()
@@ -155,15 +130,14 @@ impl PytestGenerator {
                         _ => model_value_str.clone(),
                     })
                     .unwrap_or_else(|| {
-                        // Determine placeholder based on type hint.
                         type_hint_opt
                             .as_ref()
-                            .map_or("None".to_string(), |type_hint| {
+                            .map_or(DEFAULT_PY_NONE.to_string(), |type_hint| {
                                 match type_hint.as_str() {
-                                    "int" => "0".to_string(),
-                                    "bool" => "False".to_string(),
-                                    "str" => "\"\"".to_string(),
-                                    _ => "None".to_string(), // Default placeholder
+                                    "int" => DEFAULT_PY_INT.to_string(),
+                                    "bool" => DEFAULT_PY_BOOL.to_string(),
+                                    "str" => DEFAULT_PY_STR.to_string(),
+                                    _ => DEFAULT_PY_NONE.to_string(),
                                 }
                             })
                     });
@@ -172,14 +146,12 @@ impl PytestGenerator {
             .collect::<Vec<_>>()
             .join(", ");
 
-        // Get the terminal node of the path.
-        let (terminal_node_id, _edge_from_terminal) = path.last()?; // Use '?' for early return if path is empty.
-        let terminal_node = cfg.get_node(*terminal_node_id)?; // Use '?' for early return if node not found.
+        let (terminal_node_id, _edge_from_terminal) = path.last()?;
+        let terminal_node = cfg.get_node(*terminal_node_id)?;
 
         let mut test_body_lines = Vec::new();
         let call_stmt = format!("{}({})", original_function_name, func_args_str);
 
-        // Generate assertions based on the terminal node type (Return or Raise).
         match terminal_node {
             Node::Return { stmts: _, stmt: return_stmt } => {
                 if let Some(expr_box) = &return_stmt.value {
@@ -188,142 +160,181 @@ impl PytestGenerator {
                             let expected_value_str = Self::format_python_constant(const_val);
                             test_body_lines.push(format!("    assert {} == {}", call_stmt, expected_value_str));
                         }
+                        Expr::Name(ExprName { id, .. }) => {
+                            let returned_var_name = id.to_string();
+                            let mut best_ssa_key: Option<String> = None;
+                            let mut max_ssa_index: i32 = -1;
+
+                            // Find the latest SSA version of the returned variable in the model
+                            for (key, _value) in model_assignments.iter() {
+                                if key.starts_with(&returned_var_name) {
+                                    // Check for SSA pattern like "var_assigned_type!index"
+                                    // Example: key = "mode_assigned_str!1", returned_var_name = "mode"
+                                    // Prefix to check: "mode_assigned_"
+                                    let ssa_prefix_pattern = format!("{}_assigned_", returned_var_name);
+                                    if key.starts_with(&ssa_prefix_pattern) {
+                                        if let Some(pos_bang) = key.rfind('!') {
+                                            if pos_bang > ssa_prefix_pattern.len() -1 { // Ensure '!' is after the type part
+                                                let index_str = &key[(pos_bang + 1)..];
+                                                if let Ok(current_index) = index_str.parse::<i32>() {
+                                                    if current_index > max_ssa_index {
+                                                        max_ssa_index = current_index;
+                                                        best_ssa_key = Some(key.clone());
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            let mut found_value_for_assertion = false;
+                            if let Some(key_to_use) = best_ssa_key {
+                                if let Some(model_value_str) = model_assignments.get(&key_to_use) {
+                                    let python_model_value = match model_value_str.as_str() {
+                                        "true" => "True".to_string(),
+                                        "false" => "False".to_string(),
+                                        _ => model_value_str.clone(), // Assumes it's already a Python literal string
+                                    };
+                                    test_body_lines.push(format!("    returnValue = {}", call_stmt));
+                                    test_body_lines.push(format!("    assert returnValue == {}", python_model_value));
+                                    found_value_for_assertion = true;
+                                }
+                            }
+                            
+                            // Fallback: if no SSA version was found, try the original variable name
+                            // (e.g., an input argument returned directly without reassignment).
+                            if !found_value_for_assertion {
+                                if let Some(model_value_str) = model_assignments.get(&returned_var_name) {
+                                     let python_model_value = match model_value_str.as_str() {
+                                        "true" => "True".to_string(),
+                                        "false" => "False".to_string(),
+                                        _ => model_value_str.clone(),
+                                    };
+                                    test_body_lines.push(format!("    returnValue = {}", call_stmt));
+                                    test_body_lines.push(format!("    assert returnValue == {}", python_model_value));
+                                    found_value_for_assertion = true;
+                                }
+                            }
+
+                            if !found_value_for_assertion {
+                                test_body_lines.push(format!("    # Path returns variable '{}' whose value (or its SSA version) is not in the Z3 model for this path.", returned_var_name));
+                                test_body_lines.push(format!("    returnValue = {}", call_stmt));
+                                test_body_lines.push("    # TODO: Add manual assertion for returnValue".to_string());
+                            }
+                        }
                         _ => {
-                            // Handle non-constant return expressions.
                             test_body_lines.push(format!("    # Path returns a non-constant expression: {:?}", expr_box));
                             test_body_lines.push(format!("    returnValue = {}", call_stmt));
                             test_body_lines.push("    # TODO: Add manual assertion for returnValue".to_string());
                         }
                     }
                 } else {
-                    // Handle `return None`.
                     test_body_lines.push(format!("    assert {} is None", call_stmt));
                 }
             }
             Node::Raise { stmts: _, stmt: raise_stmt } => {
-                // Refactored to assert specific native Python exceptions if identifiable.
                 let exception_name = if let Some(exc_expr_box) = &raise_stmt.exc {
                     match exc_expr_box.as_ref() {
-                        Expr::Name(ExprName { id, .. }) => id.to_string(), // e.g., raise ValueError
-                        Expr::Call(ExprCall { func, .. }) => { // e.g., raise ValueError("message")
+                        Expr::Name(ExprName { id, .. }) => id.to_string(),
+                        Expr::Call(ExprCall { func, .. }) => {
                             if let Expr::Name(ExprName { id, .. }) = func.as_ref() {
                                 id.to_string()
                             } else {
-                                "Exception".to_string() // Fallback for complex calls like raise some_func()
+                                "Exception".to_string()
                             }
                         }
-                        _ => "Exception".to_string(), // Fallback for other expression types
+                        _ => "Exception".to_string(),
                     }
                 } else {
-                    "Exception".to_string() // Fallback for bare raise
+                    "Exception".to_string()
                 };
 
                 if exception_name == "Exception" && raise_stmt.exc.is_some() {
-                     // If it's a generic Exception but there was an expression, note it.
                     test_body_lines.push(format!("    # Path raises a non-standard or complex exception: {:?}", raise_stmt.exc));
                 } else if raise_stmt.exc.is_none() {
                      test_body_lines.push("    # Path involves a bare 'raise'".to_string());
                 }
 
-
                 test_body_lines.push(format!("    with pytest.raises({}):", exception_name));
                 test_body_lines.push(format!("        {}", call_stmt));
             }
-            Node::Cond { .. } => return None, // Paths should not end on a Cond node.
+            Node::Cond { .. } => return None,
         }
 
         if test_body_lines.is_empty() {
-            return None; // No assertion lines generated.
+            return None; 
         }
-
-        // Format the test function name.
+        
         let test_function_name = format!(
             "test_{}_path_{}",
-            original_function_name.replace(' ', "_").to_lowercase(), // Pythonic names
+            original_function_name.to_lowercase().replace(|c: char| !c.is_alphanumeric() && c != '_', "_"), 
             path_index
         );
         
-        // Build the test function string.
-        // Using String::with_capacity for slight performance improvement by pre-allocating.
         let mut fn_string = String::with_capacity(100 + test_body_lines.join("\n").len());
-        writeln!(fn_string, "def {}():", test_function_name).ok()?; // Use writeln for conciseness
+        writeln!(fn_string, "def {}():", test_function_name).ok()?; 
         for line in test_body_lines {
             writeln!(fn_string, "{}", line).ok()?;
         }
         Some(fn_string)
     }
 
-    /// Generates the full content of a pytest file as a string.
-    ///
-    /// # Arguments
-    /// * `original_function_name`: Name of the Python function for which tests are generated.
-    /// * `path_results`: A slice of `PathConstraintResult` from Z3 analysis.
-    /// * `all_paths`: A vector of all identified execution paths.
-    /// * `cfg`: The `ControlFlowGraph` of the function.
-    /// * `module_name_for_import`: Optional name of the module for the import statement.
-    ///
-    /// # Returns
-    /// A `String` containing the complete pytest file content.
-    pub fn generate_pytest_file_string(
+    /// Generates imports and test function strings for a single Python function.
+    pub fn generate_suite_for_function(
         original_function_name: &str,
         path_results: &[PathConstraintResult],
-        all_paths: &[Vec<(NodeId, Edge)>], // Changed to slice for flexibility
+        all_paths: &[Vec<(NodeId, Edge)>],
         cfg: &ControlFlowGraph,
         module_name_for_import: Option<&str>,
-    ) -> String {
-        // Using String::with_capacity for slight performance improvement.
-        let mut test_file_content = String::with_capacity(1024); // Initial capacity guess
-        
-        // Add standard imports.
-        test_file_content.push_str("import pytest\n");
+    ) -> GeneratedTestSuite {
+        let mut imports = Vec::new();
+        let mut test_functions = Vec::new();
 
-        // Add import for the function under test.
         if let Some(module_name) = module_name_for_import {
-            writeln!(test_file_content, "from {} import {}", module_name, original_function_name).unwrap();
+            imports.push(format!(
+                "from {} import {}",
+                module_name, original_function_name
+            ));
         } else {
-            writeln!(test_file_content, "# Ensure '{}' is importable or defined in the test environment", original_function_name).unwrap();
+            imports.push(format!(
+                "# Ensure '{}' is importable or defined in the test environment",
+                original_function_name
+            ));
         }
-        test_file_content.push('\n');
 
-        let mut generated_tests_count = 0;
-        // Iterate over satisfiable paths and generate test functions.
-        // Replaced manual loop with filter_map and for_each for a more functional style.
-        path_results
-            .iter()
-            .filter(|pr| pr.is_satisfiable) // Process only satisfiable paths
-            .filter_map(|path_result| {
-                // Chain Optionals: model, path, then test_function_string
-                path_result.model.as_ref().and_then(|model_str| {
-                    all_paths.get(path_result.path_index).and_then(|current_path_nodes_edges| {
-                        if current_path_nodes_edges.is_empty() {
-                            None
-                        } else {
-                            Self::generate_test_function_string(
-                                original_function_name,
-                                path_result.path_index,
-                                model_str,
-                                current_path_nodes_edges,
-                                cfg,
-                            )
+        let mut generated_any_test_for_this_func = false;
+        for path_result in path_results.iter().filter(|pr| pr.is_satisfiable) {
+            if let Some(model_str) = &path_result.model {
+                if let Some(current_path_nodes_edges) = all_paths.get(path_result.path_index) {
+                    if !current_path_nodes_edges.is_empty() {
+                        if let Some(test_fn_str) = Self::generate_test_function_string(
+                            original_function_name,
+                            path_result.path_index,
+                            model_str,
+                            current_path_nodes_edges,
+                            cfg,
+                        ) {
+                            test_functions.push(test_fn_str);
+                            generated_any_test_for_this_func = true;
                         }
-                    })
-                })
-            })
-            .for_each(|test_fn_str| {
-                test_file_content.push_str(&test_fn_str);
-                test_file_content.push_str("\n\n"); // Two newlines between functions
-                generated_tests_count += 1;
-            });
-
-
-        if generated_tests_count == 0 {
-            writeln!(test_file_content, "# No satisfiable paths found or no tests could be generated for function '{}'.", original_function_name).unwrap();
+                    }
+                }
+            }
         }
 
-        // Add the main block to run pytest.
-        test_file_content.push_str("\nif __name__ == \"__main__\":\n");
-        test_file_content.push_str("    pytest.main()\n");
+        if !generated_any_test_for_this_func && !path_results.is_empty() {
+            // Add a comment if no tests were generated for this specific Python function
+            // but paths were analyzed.
+            test_functions.push(format!(
+                "\n# No satisfiable paths led to test generation for function '{}'.\n",
+                original_function_name
+            ));
+        }
 
-        test_file_content
+        GeneratedTestSuite {
+            imports,
+            test_functions,
+        }
     }
 }

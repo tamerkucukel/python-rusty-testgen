@@ -131,10 +131,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             verbose_println!(quiet_mode, "Found {} paths for {}.", paths.len(), func_name);
 
-            // Optional: Print the paths found (if not in quiet mode) using explorer
-            if !quiet_mode {
-                path::PathScraper::print_paths(&cfg_data);
-            }
+            // // Optional: Print the paths found (if not in quiet mode) using explorer
+            // if !quiet_mode {
+            //     path::PathScraper::print_paths(&cfg_data);
+            // }
 
             verbose_println!(
                 quiet_mode,

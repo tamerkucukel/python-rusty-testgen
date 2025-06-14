@@ -9,6 +9,5 @@ pub mod constraint;
 //─────────────────────────────────────────────────────────────────────────────
 // Public re-exports from the explorer module.
 //─────────────────────────────────────────────────────────────────────────────
-pub use constraint::{analyze_paths, print_paths, PathConstraintResult};
-pub use error::{PathError, Z3Error};
+pub use constraint::{analyze_paths, PathConstraintResult};
 pub use explorer::PathScraper;

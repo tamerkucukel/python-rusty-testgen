@@ -5,37 +5,33 @@
 // decision node with exactly two ordered successors (TRUE edge = 0,
 // FALSE edge = 1).  Every `return` or `raise` becomes an exit node.  The graph
 // is small but sufficient for path-based unit-test generation.
-//
-// Compile with: cargo add rustpython-ast = "0.4"
-//
 // ──────────────────────────────────────────────────────────────────────────────
 use rustpython_ast::{
     Arg,
     Arguments,
     Expr,
-    Stmt, // Added Stmt
+    Stmt,
     StmtAssert,
     StmtAssign,
     StmtAugAssign,
     StmtExpr,
     StmtFunctionDef,
     StmtIf,
-    StmtPass, // Added StmtAssert, StmtPass
+    // StmtPass is not explicitly used to alter CFG structure beyond collecting it,
+    // but keeping it for completeness if it were to be handled differently.
+    StmtPass,
     StmtRaise,
     StmtReturn,
     StmtWhile,
     Visitor,
+    // Required for generic_visit_* methods if not calling walk_* directly
+    // However, rustpython_ast::visitor::walk_* functions are preferred for explicit walking.
+    // If using self.generic_visit_*, ensure the Visitor trait's default methods are suitable.
 };
 
 use std::collections::HashMap;
 // ──────────────────────────────────────────────────────────────────────────────
 // ControlFlowGraph – a simple binary-decision control-flow graph
-// Implemented as a map of nodes, each with a unique ID.
-// Each node is either a decision node (if, while, for) or an exit node
-// (return, raise).
-// The graph is built in a single pass using a visitor pattern.
-// The graph is not a full CFG, but a simplified version with only binary
-// decision nodes and exit nodes.
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Represents a unique identifier for a node in the control flow graph.
@@ -44,242 +40,274 @@ pub type NodeId = usize;
 /// Represents a node in the control flow graph.
 #[derive(Clone, Debug)]
 pub enum Node {
+    /// A conditional node (e.g., `if`, `while` condition).
     Cond {
-        stmts: Vec<Stmt>, // Statements in the block leading to this condition
+        /// Statements accumulated in the basic block leading to this condition.
+        stmts: Vec<Stmt>,
+        /// The conditional expression.
         expr: Expr,
+        /// Successor NodeIds: `succ[0]` for True, `succ[1]` for False.
         succ: [NodeId; 2],
     },
+    /// A return statement node.
     Return {
-        stmts: Vec<Stmt>, // Statements in the block leading to this return
+        /// Statements accumulated in the basic block leading to this return.
+        stmts: Vec<Stmt>,
+        /// The `StmtReturn` AST node.
         stmt: StmtReturn,
     },
+    /// A raise statement node.
     Raise {
-        stmts: Vec<Stmt>, // Statements in the block leading to this raise
+        /// Statements accumulated in the basic block leading to this raise.
+        stmts: Vec<Stmt>,
+        /// The `StmtRaise` AST node.
         stmt: StmtRaise,
     },
 }
 
-/// Represents a binary decision edge in the control flow graph.
-#[derive(Clone, Debug)]
+/// Represents an edge type in the control flow graph.
+#[derive(Clone, Debug, PartialEq, Eq)] // Added PartialEq, Eq for potential comparisons
 pub enum Edge {
-    True,     // TRUE edge (0)
-    False,    // FALSE edge (1)
-    Terminal, // Terminal edge for exit nodes (return, raise)
+    /// Edge taken when a condition is true.
+    True,
+    /// Edge taken when a condition is false.
+    False,
+    /// Edge representing termination of a path (e.g., from a Return or Raise node).
+    Terminal,
 }
 
 /// Represents a control flow graph for a Python function.
 #[derive(Clone, Debug, Default)]
 pub struct ControlFlowGraph {
+    /// The entry `NodeId` of the graph.
     entry: NodeId,
+    /// The graph structure, mapping `NodeId` to `Node`.
     graph: HashMap<NodeId, Node>,
+    /// Stack to keep track of frontier nodes and the edge type leading to them,
+    /// used for connecting nodes during CFG construction.
     frontier_stack: Vec<(NodeId, Edge)>,
+    /// List of function arguments (name, optional type hint string).
     arguments: Vec<(String, Option<String>)>,
-    current_block_stmts: Vec<Stmt>, // Accumulator for current basic block
+    /// Accumulator for statements within the current basic block being processed.
+    current_block_stmts: Vec<Stmt>,
 }
 
 impl ControlFlowGraph {
+    /// Creates a new, empty `ControlFlowGraph`.
     pub fn new() -> Self {
-        Self {
-            graph: HashMap::new(),
-            entry: 0, // The entry node ID is 0, which is the first node added to the graph.
-            frontier_stack: Vec::new(),
-            arguments: Vec::new(),
-            current_block_stmts: Vec::new(),
-        }
+        // Default::default() is equivalent and idiomatic for structs implementing Default.
+        Default::default()
     }
 
-    /// Visits a function definition and builds the CFG for it.
+    /// Builds the CFG from a `StmtFunctionDef` AST node.
+    /// This consumes the `ControlFlowGraph`'s visitor state.
     pub fn from_ast(&mut self, node: StmtFunctionDef) {
+        // The entry node is implicitly the start of the function's body.
+        // The first node created by visit_stmt_function_def will become the effective entry.
         self.visit_stmt_function_def(node);
     }
 
-    /// Returns the entry node ID of the control flow graph.
+    /// Returns the entry `NodeId` of the control flow graph.
     pub fn get_entry(&self) -> NodeId {
         self.entry
+        // Note: self.entry is 0 by default. It's implicitly the first node added.
+        // If no nodes are added (e.g. empty function), this might not be meaningful.
+        // Consider if entry should be Option<NodeId> or set explicitly after first node.
     }
 
-    /// Returns a reference to the control flow graph.
+    /// Returns an immutable reference to the graph data (`HashMap<NodeId, Node>`).
     pub fn get_graph(&self) -> &HashMap<NodeId, Node> {
         &self.graph
     }
 
-    /// Returns a reference to the function's arguments (name, type_hint_string).
+    /// Returns an immutable reference to the list of function arguments.
     pub fn get_arguments(&self) -> &Vec<(String, Option<String>)> {
         &self.arguments
     }
 
-    /// Returns the entry node ID of the control flow graph.
+    /// Returns an immutable reference to a specific `Node` by its `NodeId`.
     pub fn get_node(&self, id: NodeId) -> Option<&Node> {
         self.graph.get(&id)
     }
 
-    /// Returns a mutable reference to the control flow graph.
-    pub fn get_graph_mut(&mut self) -> &mut HashMap<NodeId, Node> {
+    /// Returns a mutable reference to the graph data.
+    fn get_graph_mut(&mut self) -> &mut HashMap<NodeId, Node> {
         &mut self.graph
     }
 
-    /// Returns a mutable reference to a node in the graph by its ID.
-    pub fn get_node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+    /// Returns a mutable reference to a specific `Node` by its `NodeId`.
+    fn get_node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
         self.graph.get_mut(&id)
     }
 
     /// Adds a new node to the control flow graph and returns its ID.
-    fn add_node(&mut self, node: Node) -> NodeId {
+    /// Node IDs are assigned sequentially based on the current graph size.
+    fn add_node_internal(&mut self, node: Node) -> NodeId {
         let id = self.graph.len();
         self.graph.insert(id, node);
+        if id == 0 { // Set the entry point if this is the first node
+            self.entry = id;
+        }
         id
     }
 
-    /// Connects the current frontier stack to the specified node.
+    /// Connects nodes on the `frontier_stack` to the specified `node_id`.
+    /// This is used to link preceding conditional branches to their successor nodes.
     fn connect_frontier(&mut self, node_id: NodeId) {
-        while !self.frontier_stack.is_empty() {
-            if let Some((frontier_node_id, edge)) = self.frontier_stack.pop() {
-                if let Some(node) = self.get_node_mut(frontier_node_id) {
-                    match node {
-                        Node::Cond { succ, .. } => {
-                            match edge {
-                                Edge::True => succ[0] = node_id,  // Connect TRUE edge
-                                Edge::False => succ[1] = node_id, // Connect FALSE edge
-                                Edge::Terminal => continue, // Terminal edges represent exit points (e.g., return, raise)
-                                                            // and are not connected to decision nodes because they
-                                                            // signify the end of a control flow path.
-                            }
+        // Collect the frontier stack items first to avoid borrowing conflicts
+        let frontier_items: Vec<_> = self.frontier_stack.drain(..).rev().collect();
+        
+        // Iterate over the collected frontier items and connect nodes.
+        for (frontier_node_id, edge) in frontier_items {
+            if let Some(node) = self.get_node_mut(frontier_node_id) {
+                if let Node::Cond { succ, .. } = node {
+                    match edge {
+                        Edge::True => succ[0] = node_id,
+                        Edge::False => succ[1] = node_id,
+                        Edge::Terminal => {
+                            // This case should ideally not happen if logic is correct,
+                            // as Terminal edges shouldn't be on the frontier for Cond nodes.
+                            // Consider logging a warning or an error here if it occurs.
+                            // e.g., eprintln!("Warning: Terminal edge found on frontier for Cond node {}", frontier_node_id);
                         }
-                        _ => continue, // Only decision nodes have successors
                     }
                 }
+                // If it's not a Cond node, it has no successors to connect in this manner.
             }
         }
     }
 
-    /// Helper to extract argument names and type hints.
+    /// Extracts argument names and their type hints from the `Arguments` AST node.
     fn extract_function_arguments(&mut self, args: &Arguments) {
-        // Process positional-only arguments
-        for arg_with_default in &args.posonlyargs {
-            self.add_argument(&arg_with_default.def);
-        }
-        // Process regular arguments
-        for arg_with_default in &args.args {
-            self.add_argument(&arg_with_default.def);
-        }
-        // Process vararg
-        if let Some(vararg) = &args.vararg {
-            self.add_argument(vararg);
-        }
-        // Process keyword-only arguments
-        for arg_with_default in &args.kwonlyargs {
-            self.add_argument(&arg_with_default.def);
-        }
-        // Process kwarg
-        if let Some(kwarg) = &args.kwarg {
-            self.add_argument(kwarg);
-        }
+        // Helper to process a single argument.
+        let mut add_arg = |arg_node: &Arg| {
+            let name = arg_node.arg.to_string();
+            // Attempt to extract type hint as a simple name (e.g., "int", "str").
+            let type_hint = arg_node.annotation.as_ref().and_then(|ann_expr| {
+                if let Expr::Name(name_expr) = ann_expr.as_ref() { // Use as_ref() for Box<Expr>
+                    Some(name_expr.id.to_string())
+                } else {
+                    // More complex annotations (e.g., `typing.List[int]`) are not parsed here.
+                    None
+                }
+            });
+            self.arguments.push((name, type_hint));
+        };
+
+        // Process all argument kinds.
+        args.posonlyargs.iter().for_each(|arg_with_default| add_arg(&arg_with_default.def));
+        args.args.iter().for_each(|arg_with_default| add_arg(&arg_with_default.def));
+        args.vararg.as_ref().map(|vararg| add_arg(vararg));
+        args.kwonlyargs.iter().for_each(|arg_with_default| add_arg(&arg_with_default.def));
+        args.kwarg.as_ref().map(|kwarg| add_arg(kwarg));
     }
 
-    fn add_argument(&mut self, arg: &Arg) {
-        let name = arg.arg.to_string();
-        let type_hint = arg.annotation.as_ref().and_then(|ann_expr| {
-            if let Expr::Name(name_expr) = &**ann_expr {
-                Some(name_expr.id.to_string())
-            } else {
-                // For now, only simple Name annotations like "int", "bool" are parsed.
-                // More complex annotations (e.g., `typing.List[int]`) would require deeper parsing.
-                None
-            }
-        });
-        self.arguments.push((name, type_hint));
-    }
 
-    // Modified add_node helpers to consume current_block_stmts
+    /// Creates and adds a `Node::Cond` to the graph.
+    /// Consumes `self.current_block_stmts`.
     fn add_cond_node(&mut self, expr: Expr, succ: [NodeId; 2]) -> NodeId {
-        let id = self.graph.len(); // Determine ID before draining
         let node = Node::Cond {
-            stmts: self.current_block_stmts.drain(..).collect(),
+            // Take the accumulated statements for this block.
+            stmts: std::mem::take(&mut self.current_block_stmts),
             expr,
             succ,
         };
-        self.graph.insert(id, node);
-        id
+        self.add_node_internal(node)
     }
 
+    /// Creates and adds a `Node::Return` to the graph.
+    /// Consumes `self.current_block_stmts`.
     fn add_return_node(&mut self, stmt: StmtReturn) -> NodeId {
-        let id = self.graph.len();
         let node = Node::Return {
-            stmts: self.current_block_stmts.drain(..).collect(),
+            stmts: std::mem::take(&mut self.current_block_stmts),
             stmt,
         };
-        self.graph.insert(id, node);
-        id
+        self.add_node_internal(node)
     }
 
+    /// Creates and adds a `Node::Raise` to the graph.
+    /// Consumes `self.current_block_stmts`.
     fn add_raise_node(&mut self, stmt: StmtRaise) -> NodeId {
-        let id = self.graph.len();
         let node = Node::Raise {
-            stmts: self.current_block_stmts.drain(..).collect(),
+            stmts: std::mem::take(&mut self.current_block_stmts),
             stmt,
         };
-        self.graph.insert(id, node);
-        id
+        self.add_node_internal(node)
     }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Visitor impl – only cases that affect control flow
+// Visitor impl – Handles statements that affect control flow or are part of basic blocks.
 // ──────────────────────────────────────────────────────────────────────────────
 
 impl Visitor for ControlFlowGraph {
+    /// Visits the main function definition.
     fn visit_stmt_function_def(&mut self, node: StmtFunctionDef) {
-        self.current_block_stmts.clear(); // Ensure fresh start for function statements
+        self.current_block_stmts.clear(); // Ensure fresh start for function statements.
         self.extract_function_arguments(&node.args);
+        // The first node created will implicitly be the entry if graph is empty.
+        // The `entry` field is set in `add_node_internal`.
+
+        // Process each statement in the function body.
         for stmt in node.body {
-            self.visit_stmt(stmt); // Process each statement in the function body
+            self.visit_stmt(stmt);
         }
-        // After processing all statements, if current_block_stmts is not empty,
-        // it implies an implicit return. For simplicity, we currently rely on explicit
-        // return/raise to terminate paths and clear current_block_stmts.
-        // A more robust solution might add an implicit Node::Return here if needed.
+        // Note: Implicit returns (function ending without explicit return/raise)
+        // are not explicitly handled by adding a Node::Return. Paths will simply end
+        // at the last processed node if it doesn't connect to an exit node.
+        // This might be acceptable if all Python functions are assumed to have explicit returns/raises
+        // for path analysis purposes.
     }
 
-    // Override specific statement visitors to accumulate them or handle control flow
-
+    // Accumulate non-control-flow statements.
     fn visit_stmt_expr(&mut self, node: StmtExpr) {
         self.current_block_stmts.push(Stmt::Expr(node.clone()));
-        self.generic_visit_stmt_expr(node);
+        // rustpython_ast::visitor::walk_expr_stmt(self, &node); // Use &node if not consuming
+        // If generic_visit_* is intended to call the default Visitor methods to recurse,
+        // ensure that's the desired behavior. For simple accumulation, it might not be needed.
+        // The original code called self.generic_visit_stmt_expr(node) which consumes node.
+        // If node is not meant to be consumed, pass by reference.
+        // For just accumulating, no further walk is strictly necessary here.
     }
 
     fn visit_stmt_assign(&mut self, node: StmtAssign) {
         self.current_block_stmts.push(Stmt::Assign(node.clone()));
-        self.generic_visit_stmt_assign(node);
+        // rustpython_ast::visitor::walk_assign_stmt(self, &node);
     }
 
     fn visit_stmt_aug_assign(&mut self, node: StmtAugAssign) {
         self.current_block_stmts.push(Stmt::AugAssign(node.clone()));
-        self.generic_visit_stmt_aug_assign(node);
+        // rustpython_ast::visitor::walk_aug_assign_stmt(self, &node);
     }
 
     fn visit_stmt_assert(&mut self, node: StmtAssert) {
         self.current_block_stmts.push(Stmt::Assert(node.clone()));
-        self.generic_visit_stmt_assert(node);
+        // rustpython_ast::visitor::walk_assert_stmt(self, &node);
     }
 
-    // Control Flow Statement Visitors
-    // These methods will use add_cond_node, add_return_node, or add_raise_node,
-    // which internally drain self.current_block_stmts.
+    fn visit_stmt_pass(&mut self, node: StmtPass) {
+        self.current_block_stmts.push(Stmt::Pass(node.clone()));
+        // No sub-expressions to visit in StmtPass.
+    }
 
+
+    // Handle control-flow statements.
     fn visit_stmt_if(&mut self, node: StmtIf) {
-        let test_expr_for_cond_node = *node.test.clone();
-        let cond_node_id = self.add_cond_node(test_expr_for_cond_node, [0, 0]); // Drains stmts before if
-        self.connect_frontier(cond_node_id);
+        // The conditional node itself. `current_block_stmts` are for the block *before* this if.
+        let cond_node_id = self.add_cond_node((*node.test).clone(), [0, 0]); // Placeholder successors
+        self.connect_frontier(cond_node_id); // Connect previous paths to this condition.
 
-        self.visit_expr(*node.test); // Visit the condition expression itself
+        // No need to self.visit_expr(*node.test) here, as it's part of the Cond node.
+        // The `expr` field in `Node::Cond` holds the test expression.
 
         // True Branch
         self.frontier_stack.push((cond_node_id, Edge::True));
         for stmt_in_body in node.body {
             self.visit_stmt(stmt_in_body);
         }
-        let true_fallthroughs = self.frontier_stack.clone();
-        self.frontier_stack.clear();
+        // Collect all paths that fall through the true branch.
+        let true_fallthroughs = self.frontier_stack.drain(..).collect::<Vec<_>>();
+
 
         // False Branch (orelse)
         self.frontier_stack.push((cond_node_id, Edge::False));
@@ -288,21 +316,19 @@ impl Visitor for ControlFlowGraph {
                 self.visit_stmt(stmt_in_orelse);
             }
         }
-        let false_fallthroughs = self.frontier_stack.clone();
-        self.frontier_stack.clear();
+        // Collect all paths that fall through the false branch (or the if itself if no orelse).
+        let false_fallthroughs = self.frontier_stack.drain(..).collect::<Vec<_>>();
 
-        // Combine fall-throughs
+        // Restore frontier: all paths that continued after the if/else.
         self.frontier_stack.extend(true_fallthroughs);
         self.frontier_stack.extend(false_fallthroughs);
     }
 
     fn visit_stmt_while(&mut self, node: StmtWhile) {
-        // Simplified handling for `while` for now.
-        // The block before the `while` condition.
-        let test_expr_for_cond_node = *node.test.clone();
-        let cond_node_id = self.add_cond_node(test_expr_for_cond_node, [0, 0]);
+        // Node for the while condition.
+        let cond_node_id = self.add_cond_node((*node.test).clone(), [0, 0]);
         self.connect_frontier(cond_node_id);
-        self.visit_expr(*node.test);
+        // self.visit_expr(*node.test); // Condition is part of Cond node.
 
         // True branch (loop body)
         self.frontier_stack.push((cond_node_id, Edge::True));
@@ -311,35 +337,29 @@ impl Visitor for ControlFlowGraph {
         }
         // After loop body, paths connect back to the condition.
         self.connect_frontier(cond_node_id);
+        // Any break/continue would need more complex handling to modify frontier_stack.
 
-        // False branch (after loop or orelse)
-        // The frontier for "after loop" is the False edge from cond_node_id.
+        // False branch (after loop or orelse if present)
         self.frontier_stack.push((cond_node_id, Edge::False));
         if !node.orelse.is_empty() {
             for stmt_in_orelse in node.orelse {
                 self.visit_stmt(stmt_in_orelse);
             }
         }
-        // The frontier_stack now contains paths exiting the loop (either from orelse or directly if orelse is empty).
+        // The frontier_stack now contains paths exiting the loop.
     }
 
     fn visit_stmt_return(&mut self, node: StmtReturn) {
-        let return_node_id = self.add_return_node(node.clone()); // Drains stmts before return
+        let return_node_id = self.add_return_node(node.clone());
         self.connect_frontier(return_node_id);
-        if let Some(val) = &node.value {
-            self.visit_expr((**val).clone());
-        }
+        // No need to visit node.value here, it's part of the StmtReturn.
+        // The frontier_stack is cleared by connect_frontier for this path.
     }
 
     fn visit_stmt_raise(&mut self, node: StmtRaise) {
-        let raise_node_id = self.add_raise_node(node.clone()); // Drains stmts before raise
+        let raise_node_id = self.add_raise_node(node.clone());
         self.connect_frontier(raise_node_id);
-        if let Some(exc) = &node.exc {
-            self.visit_expr((**exc).clone());
-        }
-        if let Some(cause) = &node.cause {
-            self.visit_expr((**cause).clone());
-        }
+        // No need to visit node.exc or node.cause here.
     }
 }
 // ──────────────────────────────────────────────────────────────────────────────

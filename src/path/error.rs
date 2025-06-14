@@ -49,7 +49,7 @@ pub enum Z3Error {
     #[error("Unsupported boolean operator for Z3 conversion: {op:?}")]
     UnsupportedBoolOperator { op: BoolOp },
 
-    /// Error when a Python comparison operator is not supported.
+    /// Error when a Python comparison operator is not supported for a given type or in general.
     #[error("Unsupported comparison operator for Z3 conversion: {op:?}")]
     UnsupportedCmpOperator { op: CmpOp },
 
@@ -77,4 +77,12 @@ pub enum Z3Error {
     /// Error related to specific expression variants not being handled.
     #[error("Unhandled expression variant: {variant_name:?}")]
     UnhandledExpressionVariant { variant_name: String },
+
+    /// Error when a comparison operator is not supported for a specific Z3 sort.
+    #[error("Comparison operator {op:?} not supported for Z3 sort {sort_name}")]
+    UnsupportedCmpOperatorForSort { op: CmpOp, sort_name: String },
+
+    /// Error when types in a comparison do not match.
+    #[error("Type mismatch in comparison for operator {op:?}: left type {left_type}, right type {right_type}")]
+    TypeMismatchInComparison { op: CmpOp, left_type: String, right_type: String },
 }

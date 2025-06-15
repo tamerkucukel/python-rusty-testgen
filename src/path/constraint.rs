@@ -562,10 +562,12 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                                     self.z3_ctx,
                                     &new_lhs_z3_var_name_prefix,
                                 )), // Added Real
-                                sort_kind => return Err(Z3Error::TypeConversion(format!(
+                                sort_kind => {
+                                    return Err(Z3Error::TypeConversion(format!(
                                     "Unsupported Z3 sort {:?} for assignment target's new value",
                                     sort_kind
-                                ))),
+                                )))
+                                }
                             };
 
                             assertions.push(new_lhs_z3_var._eq(&z3_rhs_value));
@@ -673,10 +675,12 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                                 self.z3_ctx,
                                 &new_lhs_z3_var_name_prefix,
                             )), // Added Real
-                            sort_kind => return Err(Z3Error::TypeConversion(format!(
+                            sort_kind => {
+                                return Err(Z3Error::TypeConversion(format!(
                                 "Unsupported Z3 sort {:?} for aug-assignment target's new value",
                                 sort_kind
-                            ))),
+                            )))
+                            }
                         };
 
                         assertions.push(new_lhs_z3_var._eq(&result_val_dynamic));

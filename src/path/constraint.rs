@@ -484,6 +484,9 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                             &[&left_val, &right_val],
                         ))),
                         Operator::Div => Ok(Dynamic::from_ast(&Real::div(&left_val, &right_val))),
+                        Operator::Pow => { // ADDED Operator::Pow for Reals
+                            Ok(Dynamic::from_ast(&left_val.power(&right_val)))
+                        }
                         _ => Err(Z3Error::UnsupportedExpressionType {
                             expr_repr: format!("Unsupported binary operator {:?} for Reals", op),
                         }),
@@ -505,6 +508,9 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                             self.z3_ctx,
                             &[&left_val, &right_val],
                         ))),
+                        Operator::Pow => { // ADDED Operator::Pow for Ints
+                            Ok(Dynamic::from_ast(&left_val.power(&right_val)))
+                        }
                         // Integer division would be Int::div, but Python's / on ints can produce float.
                         // For now, sticking to Z3 Int ops if both are Int.
                         _ => Err(Z3Error::UnsupportedExpressionType {
@@ -522,7 +528,7 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
             }
         } else {
             Err(Z3Error::UnsupportedExpressionType {
-                expr_repr: format!("Cannot convert to Z3 Dynamic: {:?}", expr), // Use expr
+                expr_repr: format!("Cannot convert to Z3 Dynamic: {:?}", expr),
             })
         }
     }
@@ -621,6 +627,9 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                                     Operator::Div => {
                                         Dynamic::from_ast(&Real::div(&lhs_real, &rhs_real))
                                     }
+                                    Operator::Pow => { // Added Power support for Reals
+                                        Dynamic::from_ast(&lhs_real.power(&rhs_real))
+                                    }
                                     _ => {
                                         return Err(Z3Error::UnsupportedExpressionType {
                                             expr_repr: format!(
@@ -647,6 +656,12 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                                         self.z3_ctx,
                                         &[&lhs_int, &rhs_int],
                                     )),
+                                    Operator::Pow => { // Added Power support for Ints
+                                        Dynamic::from_ast(&lhs_int.power(&rhs_int))
+                                    }
+                                    // Note: Operator::Div for Ints would typically promote to Real in Python for /=
+                                    // If Operator::FloorDiv (//=) was intended, Int::div would be used.
+                                    // Current structure correctly promotes to Real if Operator::Div is used.
                                     _ => {
                                         return Err(Z3Error::UnsupportedExpressionType {
                                             expr_repr: format!(
@@ -674,7 +689,8 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                             z3::SortKind::Real => Dynamic::from_ast(&Real::fresh_const(
                                 self.z3_ctx,
                                 &new_lhs_z3_var_name_prefix,
-                            )), // Added Real
+                            )), 
+                            // Assuming Bool and String aug assigns are not standard or handled elsewhere if needed
                             sort_kind => {
                                 return Err(Z3Error::TypeConversion(format!(
                                 "Unsupported Z3 sort {:?} for aug-assignment target's new value",

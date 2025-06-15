@@ -65,7 +65,7 @@ pub fn process_single_function(
             quiet_mode,
             "   => Logging CFG details to cfg_details.log..."
         );
-        if let Err(e) = PathScraper::print_paths_to_writer(&cfg_data, cfg_log_writer) {
+        if let Err(e) = PathScraper::print_paths_to_writer(&func_name, &cfg_data, cfg_log_writer) {
             verbose_eprintln!(
                 quiet_mode,
                 "   [ERROR] Failed to write CFG details for {}: {}", // func_name is now correct

@@ -11,7 +11,8 @@ static LOGGER: Lazy<Mutex<Option<BufWriter<File>>>> = Lazy::new(|| Mutex::new(No
 pub fn init_global_logger(log_file_path: &str) -> Result<(), IoError> {
     let file = OpenOptions::new()
         .create(true)
-        .append(true)
+        .write(true)
+        .truncate(true)
         .open(log_file_path)?;
     let writer = BufWriter::new(file);
     let mut logger_guard = LOGGER.lock().expect("Logger mutex poisoned");

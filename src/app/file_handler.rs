@@ -2,8 +2,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Error as IoError, Write};
 use std::path::{Path, PathBuf};
 // Use super:: for macros defined in app/mod.rs
-use super::verbose_eprintln; // These macros now write to the log file
 use super::error::AppError;
+use super::verbose_eprintln; // These macros now write to the log file
 
 pub fn validate_python_file_and_get_module(
     python_file_path: &PathBuf,

@@ -10,6 +10,7 @@ use rustpython_ast::{
     Arg,
     Arguments,
     Expr,
+    ExprName,
     Stmt,
     StmtAssert,
     StmtAssign,
@@ -24,9 +25,6 @@ use rustpython_ast::{
     StmtReturn,
     StmtWhile,
     Visitor,
-    // Required for generic_visit_* methods if not calling walk_* directly
-    // However, rustpython_ast::visitor::walk_* functions are preferred for explicit walking.
-    // If using self.generic_visit_*, ensure the Visitor trait's default methods are suitable.
 };
 
 use std::collections::HashMap;
@@ -90,6 +88,8 @@ pub struct ControlFlowGraph {
     arguments: Vec<(String, Option<String>)>,
     /// Accumulator for statements within the current basic block being processed.
     current_block_stmts: Vec<Stmt>,
+    /// Optional return type hint string of the function.
+    fn_return_type: Option<String>, // NEW FIELD
 }
 
 impl ControlFlowGraph {
@@ -125,6 +125,12 @@ impl ControlFlowGraph {
         &self.arguments
     }
 
+    /// Returns an immutable reference to the function's return type hint, if any.
+    pub fn get_fn_return_type(&self) -> Option<&String> {
+        // NEW METHOD
+        self.fn_return_type.as_ref()
+    }
+
     /// Returns an immutable reference to a specific `Node` by its `NodeId`.
     pub fn get_node(&self, id: NodeId) -> Option<&Node> {
         self.graph.get(&id)
@@ -145,7 +151,8 @@ impl ControlFlowGraph {
     fn add_node_internal(&mut self, node: Node) -> NodeId {
         let id = self.graph.len();
         self.graph.insert(id, node);
-        if id == 0 { // Set the entry point if this is the first node
+        if id == 0 {
+            // Set the entry point if this is the first node
             self.entry = id;
         }
         id
@@ -156,7 +163,7 @@ impl ControlFlowGraph {
     fn connect_frontier(&mut self, node_id: NodeId) {
         // Collect the frontier stack items first to avoid borrowing conflicts
         let frontier_items: Vec<_> = self.frontier_stack.drain(..).rev().collect();
-        
+
         // Iterate over the collected frontier items and connect nodes.
         for (frontier_node_id, edge) in frontier_items {
             if let Some(node) = self.get_node_mut(frontier_node_id) {
@@ -184,7 +191,8 @@ impl ControlFlowGraph {
             let name = arg_node.arg.to_string();
             // Attempt to extract type hint as a simple name (e.g., "int", "str").
             let type_hint = arg_node.annotation.as_ref().and_then(|ann_expr| {
-                if let Expr::Name(name_expr) = ann_expr.as_ref() { // Use as_ref() for Box<Expr>
+                if let Expr::Name(name_expr) = ann_expr.as_ref() {
+                    // Use as_ref() for Box<Expr>
                     Some(name_expr.id.to_string())
                 } else {
                     // More complex annotations (e.g., `typing.List[int]`) are not parsed here.
@@ -195,13 +203,18 @@ impl ControlFlowGraph {
         };
 
         // Process all argument kinds.
-        args.posonlyargs.iter().for_each(|arg_with_default| add_arg(&arg_with_default.def));
-        args.args.iter().for_each(|arg_with_default| add_arg(&arg_with_default.def));
+        args.posonlyargs
+            .iter()
+            .for_each(|arg_with_default| add_arg(&arg_with_default.def));
+        args.args
+            .iter()
+            .for_each(|arg_with_default| add_arg(&arg_with_default.def));
         args.vararg.as_ref().map(|vararg| add_arg(vararg));
-        args.kwonlyargs.iter().for_each(|arg_with_default| add_arg(&arg_with_default.def));
+        args.kwonlyargs
+            .iter()
+            .for_each(|arg_with_default| add_arg(&arg_with_default.def));
         args.kwarg.as_ref().map(|kwarg| add_arg(kwarg));
     }
-
 
     /// Creates and adds a `Node::Cond` to the graph.
     /// Consumes `self.current_block_stmts`.
@@ -245,6 +258,16 @@ impl Visitor for ControlFlowGraph {
     fn visit_stmt_function_def(&mut self, node: StmtFunctionDef) {
         self.current_block_stmts.clear(); // Ensure fresh start for function statements.
         self.extract_function_arguments(&node.args);
+
+        // Extract and store the return type hint
+        if let Some(return_annotation_expr) = &node.returns {
+            if let Expr::Name(ExprName { id, .. }) = return_annotation_expr.as_ref() {
+                self.fn_return_type = Some(id.to_string());
+            }
+            // else: More complex return annotations (e.g., typing.List[int]) are not stored as simple strings.
+            // For now, we only capture simple name annotations like "int", "float", "str".
+        }
+
         // The first node created will implicitly be the entry if graph is empty.
         // The `entry` field is set in `add_node_internal`.
 
@@ -252,11 +275,34 @@ impl Visitor for ControlFlowGraph {
         for stmt in node.body {
             self.visit_stmt(stmt);
         }
-        // Note: Implicit returns (function ending without explicit return/raise)
-        // are not explicitly handled by adding a Node::Return. Paths will simply end
-        // at the last processed node if it doesn't connect to an exit node.
-        // This might be acceptable if all Python functions are assumed to have explicit returns/raises
-        // for path analysis purposes.
+
+        // After processing all explicit statements, handle paths that would implicitly return None.
+        // Create a single Node::Return for "return None".
+        // Any statements remaining in self.current_block_stmts are those that execute immediately
+        // before this implicit return.
+        // All open paths on self.frontier_stack (e.g., from if/else branches that didn't explicitly return)
+        // will be connected to this single implicit return node.
+
+        // Define the AST for "return None"
+        let implicit_return_stmt_ast = StmtReturn {
+            value: None,
+            range: Default::default(),
+        };
+
+        // add_return_node consumes self.current_block_stmts to form the statements list
+        // for the new Node::Return, and then adds this new node to the graph.
+        let implicit_return_node_id = self.add_return_node(implicit_return_stmt_ast);
+
+        // connect_frontier takes all pending paths from self.frontier_stack
+        // and connects them to this newly created implicit_return_node_id.
+        // This effectively ensures all paths terminate.
+        self.connect_frontier(implicit_return_node_id);
+
+        // Note: If the function explicitly ended with a return/raise, current_block_stmts would be empty
+        // (consumed by that explicit return/raise's add_xxx_node call) and frontier_stack would also be empty
+        // (drained by the connect_frontier call for that explicit return/raise).
+        // In such a case, add_return_node here would create a Node::Return with empty stmts,
+        // and connect_frontier would do nothing, which is correct.
     }
 
     // Accumulate non-control-flow statements.
@@ -290,7 +336,6 @@ impl Visitor for ControlFlowGraph {
         // No sub-expressions to visit in StmtPass.
     }
 
-
     // Handle control-flow statements.
     fn visit_stmt_if(&mut self, node: StmtIf) {
         // The conditional node itself. `current_block_stmts` are for the block *before* this if.
@@ -307,7 +352,6 @@ impl Visitor for ControlFlowGraph {
         }
         // Collect all paths that fall through the true branch.
         let true_fallthroughs = self.frontier_stack.drain(..).collect::<Vec<_>>();
-
 
         // False Branch (orelse)
         self.frontier_stack.push((cond_node_id, Edge::False));

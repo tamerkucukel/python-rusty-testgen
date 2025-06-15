@@ -5,6 +5,95 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::ops::Deref;
 
+// Helper function to convert Z3 real string representations to Python float literals
+fn z3_real_to_python_float_literal(z3_val: &str) -> String {
+    let mut s = z3_val.trim().to_string();
+    if s.ends_with('?') {
+        // Remove Z3's optional '?' suffix for reals
+        s.pop();
+    }
+
+    let is_negative = s.starts_with("(- ") && s.ends_with(')');
+    let mut effective_s = if is_negative {
+        // Strip "(- " prefix and ")" suffix, then trim
+        s.strip_prefix("(- ")
+            .unwrap_or(&s) // Should not fail if is_negative is true
+            .strip_suffix(')')
+            .unwrap_or(&s) // Should not fail if is_negative is true
+            .trim()
+            .to_string()
+    } else {
+        s // Use the original string (already trimmed and '?' removed)
+    };
+
+    // Check for fractional form like "(/ numerator denominator)"
+    if effective_s.starts_with("(/ ") && effective_s.ends_with(')') {
+        let fraction_content = effective_s
+            .strip_prefix("(/ ")
+            .unwrap_or("")
+            .strip_suffix(')')
+            .unwrap_or("")
+            .trim();
+
+        // Split the numerator and denominator.
+        // This assumes they are separated by whitespace and are simple numbers
+        // or recursively parsable by this function.
+        let mut parts_iter = fraction_content.split_whitespace();
+        if let (Some(num_str_raw), Some(den_str_raw)) = (parts_iter.next(), parts_iter.next()) {
+            // Further splitting or parsing might be needed if num/den are complex S-expressions.
+            // For now, assume they are directly parsable or simple Z3 reals.
+            let num_cleaned = z3_real_to_python_float_literal(num_str_raw);
+            let den_cleaned = z3_real_to_python_float_literal(den_str_raw);
+
+            if let (Ok(num_f64), Ok(den_f64)) =
+                (num_cleaned.parse::<f64>(), den_cleaned.parse::<f64>())
+            {
+                if den_f64 != 0.0 {
+                    let result = num_f64 / den_f64;
+                    // Format to a string with sufficient precision, then clean up.
+                    let mut formatted_result = format!("{:.17}", result); // f64 has ~15-17 decimal digits precision
+                    if formatted_result.contains('.') {
+                        formatted_result = formatted_result.trim_end_matches('0').to_string();
+                        if formatted_result.ends_with('.') {
+                            formatted_result.push('0'); // Ensure "1." becomes "1.0"
+                        }
+                    }
+                    effective_s = formatted_result;
+                } else {
+                    // Division by zero, return original fraction form (or an error indicator)
+                    // For now, we return the (potentially negative) original S-expression string
+                    return if is_negative {
+                        format!("(- {})", effective_s)
+                    } else {
+                        effective_s
+                    };
+                }
+            } else {
+                // Failed to parse numerator or denominator as f64
+                return if is_negative {
+                    format!("(- {})", effective_s)
+                } else {
+                    effective_s
+                };
+            }
+        } else {
+            // Malformed fraction string
+            return if is_negative {
+                format!("(- {})", effective_s)
+            } else {
+                effective_s
+            };
+        }
+    }
+    // If not a fraction, effective_s is now a cleaned decimal or integer string
+
+    if is_negative {
+        format!("-{}", effective_s)
+    } else {
+        effective_s
+    }
+}
+
 pub struct PytestGenerator;
 
 const DEFAULT_PY_NONE: &str = "None";
@@ -21,14 +110,11 @@ pub struct GeneratedTestSuite {
 
 impl PytestGenerator {
     pub(crate) fn parse_z3_model(model_str: &str) -> HashMap<String, String> {
-        // Replaced manual loop with iterator chain for conciseness and idiomatic Rust.
         model_str
             .lines()
             .filter_map(|line| {
                 let trimmed_line = line.trim();
                 if trimmed_line.starts_with("(define-fun") && trimmed_line.ends_with(')') {
-                    // Using unwrap_or_default which results in "" for &str if prefix/suffix is not found.
-                    // This avoids panic and keeps similar logic to original unwrap_or("").
                     let core_parts: Vec<&str> = trimmed_line
                         .strip_prefix("(define-fun ")
                         .unwrap_or_default()
@@ -39,54 +125,28 @@ impl PytestGenerator {
 
                     if core_parts.len() >= 4 && core_parts[1] == "()" {
                         let name = core_parts[0].to_string();
-                        // Simplified negative number parsing and complex value handling.
-                        let mut value_str = if core_parts[3] == "(-"
-                            && core_parts.len() >= 5
-                            && core_parts[4].ends_with(')')
-                        {
-                            // Handles "(- number)" format
-                            format!("-{}", core_parts[4].strip_suffix(')').unwrap_or(core_parts[4]))
-                        } else if core_parts[3].starts_with('(') && core_parts[3].contains('-') && core_parts.len() > 4 {
-                            // Placeholder for more complex Z3 values, e.g. (bvneg (_ bv2 32))
-                            core_parts[3..].join(" ")
-                        } else {
-                            core_parts[3].to_string()
-                        };
+                        // Reconstruct the full value expression string from Z3 model
+                        // It starts after name, "()", and type, so from core_parts[3]
+                        let raw_value_str = core_parts
+                            .iter()
+                            .skip(3)
+                            .copied()
+                            .collect::<Vec<&str>>()
+                            .join(" ");
 
-                        // Handle Z3 real output like "1.500000?" by stripping the '?'
-                        if value_str.ends_with('?') {
-                            value_str.pop();
-                        }
-                        // Rudimentary fraction handling: "(/ 3.0 2.0)" -> "1.5"
-                        // This is very basic and might need a proper math expression parser for complex cases.
-                        if value_str.starts_with("(/ ") && value_str.ends_with(')') && value_str.matches(' ').count() == 2 {
-                            let parts: Vec<&str> = value_str
-                                .strip_prefix("(/ ")
-                                .unwrap_or_default()
-                                .strip_suffix(')')
-                                .unwrap_or_default()
-                                .split_whitespace()
-                                .collect();
-                            if parts.len() == 2 {
-                                if let (Ok(num), Ok(den)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
-                                    if den != 0.0 {
-                                        value_str = (num / den).to_string();
-                                    }
-                                }
-                            }
-                        }
-
-
-                        Some((name, value_str))
+                        let python_literal_value = z3_real_to_python_float_literal(&raw_value_str);
+                        Some((name, python_literal_value))
                     } else {
                         None
                     }
-                } else if trimmed_line.contains("->") { // For simple assignments like "var -> val"
+                } else if trimmed_line.contains("->") {
+                    // Handle simpler "var -> val" if present
                     let parts: Vec<&str> = trimmed_line.split("->").map(str::trim).collect();
                     if parts.len() == 2 {
-                        let mut value_part = parts[1].to_string();
-                        if value_part.ends_with('?') { value_part.pop(); }
-                        Some((parts[0].to_string(), value_part))
+                        let name = parts[0].to_string();
+                        let raw_value_str = parts[1].to_string();
+                        let python_literal_value = z3_real_to_python_float_literal(&raw_value_str);
+                        Some((name, python_literal_value))
                     } else {
                         None
                     }
@@ -103,7 +163,10 @@ impl PytestGenerator {
             Constant::Bool(b) => if *b { "True" } else { "False" }.to_string(),
             Constant::Str(s_val) => {
                 // Escapes backslashes and double quotes for Python string literals.
-                format!("\"{}\"", s_val.as_str().replace('\\', "\\\\").replace('\"', "\\\"")) // Use as_str()
+                format!(
+                    "\"{}\"",
+                    s_val.as_str().replace('\\', "\\\\").replace('\"', "\\\"")
+                ) // Use as_str()
             }
             Constant::Float(f) => f.to_string(),
             Constant::Complex { real, imag } => format!("complex({}, {})", real, imag),
@@ -139,38 +202,37 @@ impl PytestGenerator {
         path_index: usize,
         model_str: &str,
         path: &[(NodeId, Edge)],
-        cfg: &ControlFlowGraph,
+        cfg: &ControlFlowGraph, // ControlFlowGraph contains return type hint
     ) -> Option<String> {
         let model_assignments = Self::parse_z3_model(model_str);
-        
-        let func_args_str = cfg
-            .get_arguments()
-            .iter()
-            .map(|(arg_name, type_hint_opt)| {
-                let py_value = model_assignments
-                    .get(arg_name)
-                    .map(|model_value_str| match model_value_str.as_str() {
-                        "true" => "True".to_string(),
-                        "false" => "False".to_string(),
-                        _ => model_value_str.clone(), // Assumes Z3 output is Python-compatible literal
-                    })
-                    .unwrap_or_else(|| {
-                        type_hint_opt
-                            .as_ref()
-                            .map_or(DEFAULT_PY_NONE.to_string(), |type_hint| {
-                                match type_hint.as_str() {
+
+        let func_args_str =
+            cfg.get_arguments()
+                .iter()
+                .map(|(arg_name, type_hint_opt)| {
+                    let py_value = model_assignments
+                        .get(arg_name)
+                        .map(|model_value_str| match model_value_str.as_str() {
+                            "true" => "True".to_string(),
+                            "false" => "False".to_string(),
+                            _ => model_value_str.clone(),
+                        })
+                        .unwrap_or_else(|| {
+                            type_hint_opt.as_ref().map_or(
+                                DEFAULT_PY_NONE.to_string(),
+                                |type_hint| match type_hint.as_str() {
                                     "int" => DEFAULT_PY_INT.to_string(),
                                     "bool" => DEFAULT_PY_BOOL.to_string(),
                                     "str" => DEFAULT_PY_STR.to_string(),
-                                    "float" => DEFAULT_PY_FLOAT.to_string(), // Added float default
+                                    "float" => DEFAULT_PY_FLOAT.to_string(),
                                     _ => DEFAULT_PY_NONE.to_string(),
-                                }
-                            })
-                    });
-                format!("{}={}", arg_name, py_value)
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
+                                },
+                            )
+                        });
+                    format!("{}={}", arg_name, py_value)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
 
         let (terminal_node_id, _edge_from_terminal) = path.last()?;
         let terminal_node = cfg.get_node(*terminal_node_id)?;
@@ -178,28 +240,48 @@ impl PytestGenerator {
         let mut test_body_lines = Vec::new();
         let call_stmt = format!("{}({})", original_function_name, func_args_str);
 
+        // Determine if the function's return type is float
+        let is_return_type_float = cfg.get_fn_return_type() == Some(&"float".to_string());
+
         match terminal_node {
-            Node::Return { stmts: _, stmt: return_stmt } => {
+            Node::Return {
+                stmts: _,
+                stmt: return_stmt,
+            } => {
                 if let Some(expr_box) = &return_stmt.value {
-                    match &expr_box.deref() { // Use &expr_box.node
-                        Expr::Constant(ExprConstant { value: const_val, .. }) => {
+                    match &expr_box.deref() {
+                        // Use .deref() to get to Expr_
+                        Expr::Constant(ExprConstant {
+                            value: const_val, ..
+                        }) => {
                             let expected_value_str = Self::format_python_constant(const_val);
-                            test_body_lines.push(format!("    assert {} == {}", call_stmt, expected_value_str));
+                            if is_return_type_float && const_val.is_float() {
+                                // Check if constant itself is float
+                                test_body_lines.push(format!(
+                                    "    assert {} == pytest.approx({})",
+                                    call_stmt, expected_value_str
+                                ));
+                            } else {
+                                test_body_lines.push(format!(
+                                    "    assert {} == {}",
+                                    call_stmt, expected_value_str
+                                ));
+                            }
                         }
                         Expr::Name(ExprName { id, .. }) => {
-                            let returned_var_name = id.to_string(); // e.g., "mode"
+                            let returned_var_name = id.to_string();
                             let mut best_ssa_key: Option<String> = None;
                             let mut max_ssa_index: i32 = -1;
 
-                            // Define the exact expected prefixes for SSA variables based on returned_var_name
-                            let ssa_prefix_expected_assigned = format!("{}_assigned", returned_var_name); // e.g., "mode_assigned"
-                            let ssa_prefix_expected_aug_assigned = format!("{}_aug_assigned", returned_var_name); // e.g., "mode_aug_assigned"
+                            let ssa_prefix_expected_assigned =
+                                format!("{}_assigned", returned_var_name);
+                            let ssa_prefix_expected_aug_assigned =
+                                format!("{}_aug_assigned", returned_var_name);
 
                             for (key_from_model, _value) in model_assignments.iter() {
-                                // Example key_from_model: "mode_assigned!1"
                                 if let Some(pos_bang) = key_from_model.rfind('!') {
-                                    let prefix_in_key = &key_from_model[..pos_bang]; // e.g., "mode_assigned"
-                                    let index_str = &key_from_model[(pos_bang + 1)..];   // e.g., "1"
+                                    let prefix_in_key = &key_from_model[..pos_bang];
+                                    let index_str = &key_from_model[(pos_bang + 1)..];
 
                                     let mut is_matching_ssa_pattern = false;
                                     if prefix_in_key == ssa_prefix_expected_assigned {
@@ -220,30 +302,52 @@ impl PytestGenerator {
                             }
 
                             let mut found_value_for_assertion = false;
-                            if let Some(key_to_use) = best_ssa_key { // key_to_use would be "mode_assigned!1"
+                            if let Some(key_to_use) = best_ssa_key {
                                 if let Some(model_value_str) = model_assignments.get(&key_to_use) {
                                     let python_model_value = match model_value_str.as_str() {
                                         "true" => "True".to_string(),
                                         "false" => "False".to_string(),
-                                        _ => model_value_str.clone(), 
+                                        _ => model_value_str.clone(),
                                     };
-                                    test_body_lines.push(format!("    returnValue = {}", call_stmt));
-                                    test_body_lines.push(format!("    assert returnValue == {}", python_model_value));
+                                    test_body_lines
+                                        .push(format!("    returnValue = {}", call_stmt));
+                                    if is_return_type_float {
+                                        test_body_lines.push(format!(
+                                            "    assert returnValue == pytest.approx({})",
+                                            python_model_value
+                                        ));
+                                    } else {
+                                        test_body_lines.push(format!(
+                                            "    assert returnValue == {}",
+                                            python_model_value
+                                        ));
+                                    }
                                     found_value_for_assertion = true;
                                 }
                             }
-                            
-                            // Fallback: if no SSA version was found, try the original variable name
-                            // (e.g., an input argument returned directly without reassignment).
+
                             if !found_value_for_assertion {
-                                if let Some(model_value_str) = model_assignments.get(&returned_var_name) {
-                                     let python_model_value = match model_value_str.as_str() {
+                                if let Some(model_value_str) =
+                                    model_assignments.get(&returned_var_name)
+                                {
+                                    let python_model_value = match model_value_str.as_str() {
                                         "true" => "True".to_string(),
                                         "false" => "False".to_string(),
                                         _ => model_value_str.clone(),
                                     };
-                                    test_body_lines.push(format!("    returnValue = {}", call_stmt));
-                                    test_body_lines.push(format!("    assert returnValue == {}", python_model_value));
+                                    test_body_lines
+                                        .push(format!("    returnValue = {}", call_stmt));
+                                    if is_return_type_float {
+                                        test_body_lines.push(format!(
+                                            "    assert returnValue == pytest.approx({})",
+                                            python_model_value
+                                        ));
+                                    } else {
+                                        test_body_lines.push(format!(
+                                            "    assert returnValue == {}",
+                                            python_model_value
+                                        ));
+                                    }
                                     found_value_for_assertion = true;
                                 }
                             }
@@ -251,25 +355,38 @@ impl PytestGenerator {
                             if !found_value_for_assertion {
                                 test_body_lines.push(format!("    # Path returns variable '{}' whose value (or its SSA version) is not in the Z3 model for this path.", returned_var_name));
                                 test_body_lines.push(format!("    returnValue = {}", call_stmt));
-                                test_body_lines.push("    # TODO: Add manual assertion for returnValue".to_string());
+                                test_body_lines.push(
+                                    "    # TODO: Add manual assertion for returnValue".to_string(),
+                                );
                             }
                         }
                         _ => {
-                            test_body_lines.push(format!("    # Path returns a non-constant expression: {:?}", expr_box.deref())); // Use .node
+                            test_body_lines.push(format!(
+                                "    # Path returns a non-constant expression: {:?}",
+                                expr_box.deref()
+                            ));
                             test_body_lines.push(format!("    returnValue = {}", call_stmt));
-                            test_body_lines.push("    # TODO: Add manual assertion for returnValue".to_string());
+                            test_body_lines.push(
+                                "    # TODO: Add manual assertion for returnValue".to_string(),
+                            );
                         }
                     }
                 } else {
+                    // Function returns None implicitly
                     test_body_lines.push(format!("    assert {} is None", call_stmt));
                 }
             }
-            Node::Raise { stmts: _, stmt: raise_stmt } => {
+            Node::Raise {
+                stmts: _,
+                stmt: raise_stmt,
+            } => {
                 let exception_name = if let Some(exc_expr_box) = &raise_stmt.exc {
-                    match &exc_expr_box.deref() { // Use &exc_expr_box.node
+                    match &exc_expr_box.deref() {
+                        // Use &exc_expr_box.node
                         Expr::Name(ExprName { id, .. }) => id.to_string(),
                         Expr::Call(ExprCall { func, .. }) => {
-                            if let Expr::Name(ExprName { id, .. }) = &func.deref() { // Use &func.node
+                            if let Expr::Name(ExprName { id, .. }) = &func.deref() {
+                                // Use &func.node
                                 id.to_string()
                             } else {
                                 "Exception".to_string()
@@ -282,9 +399,12 @@ impl PytestGenerator {
                 };
 
                 if exception_name == "Exception" && raise_stmt.exc.is_some() {
-                    test_body_lines.push(format!("    # Path raises a non-standard or complex exception: {:?}", raise_stmt.exc.as_ref())); // Use .node
+                    test_body_lines.push(format!(
+                        "    # Path raises a non-standard or complex exception: {:?}",
+                        raise_stmt.exc.as_ref()
+                    )); // Use .node
                 } else if raise_stmt.exc.is_none() {
-                     test_body_lines.push("    # Path involves a bare 'raise'".to_string());
+                    test_body_lines.push("    # Path involves a bare 'raise'".to_string());
                 }
 
                 test_body_lines.push(format!("    with pytest.raises({}):", exception_name));
@@ -294,17 +414,19 @@ impl PytestGenerator {
         }
 
         if test_body_lines.is_empty() {
-            return None; 
+            return None;
         }
-        
+
         let test_function_name = format!(
             "test_{}_path_{}",
-            original_function_name.to_lowercase().replace(|c: char| !c.is_alphanumeric() && c != '_', "_"), 
+            original_function_name
+                .to_lowercase()
+                .replace(|c: char| !c.is_alphanumeric() && c != '_', "_"),
             path_index
         );
-        
+
         let mut fn_string = String::with_capacity(100 + test_body_lines.join("\n").len());
-        writeln!(fn_string, "def {}():", test_function_name).ok()?; 
+        writeln!(fn_string, "def {}():", test_function_name).ok()?;
         for line in test_body_lines {
             writeln!(fn_string, "{}", line).ok()?;
         }

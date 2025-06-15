@@ -20,8 +20,7 @@ pub fn load_ast_from_file(file_path: &str) -> Result<Vec<StmtFunctionDef>, AstLo
 
     // Extract function definitions from the AST
     // Refactored to use a more direct error return if no functions are found.
-    get_function_defs(ast)
-        .ok_or_else(|| AstLoaderError::NoFunctionsFound(file_path.into()))
+    get_function_defs(ast).ok_or_else(|| AstLoaderError::NoFunctionsFound(file_path.into()))
 }
 
 /// Extracts function definitions from a vector of AST statements.

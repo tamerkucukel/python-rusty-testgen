@@ -57,12 +57,6 @@ pub enum Z3Error {
     #[error("Boolean operation received empty values list")]
     EmptyBoolOpValues,
 
-    /// Error for chained comparisons (e.g., a < b < c) which are not directly supported.
-    #[error(
-        "Chained comparisons or multiple operators in a single Compare node are not supported"
-    )]
-    ChainedComparisonNotSupported,
-
     /// Error when there is a type mismatch for a variable in Z3 operations.
     #[error("Type mismatch for variable '{variable_name}': expected {expected_type}, found other")]
     TypeMismatch {
@@ -84,5 +78,13 @@ pub enum Z3Error {
 
     /// Error when types in a comparison do not match.
     #[error("Type mismatch in comparison for operator {op:?}: left type {left_type}, right type {right_type}")]
-    TypeMismatchInComparison { op: CmpOp, left_type: String, right_type: String },
+    TypeMismatchInComparison {
+        op: CmpOp,
+        left_type: String,
+        right_type: String,
+    },
+
+    /// Error when a Python expression is malformed or cannot be parsed correctly.
+    #[error("Malformed Python expression: {0}")]
+    MalformedExpression(String),
 }

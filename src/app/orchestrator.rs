@@ -13,7 +13,10 @@ pub fn run_app(cli: Cli) -> Result<(), AppError> {
 
     if !quiet_mode {
         if let Err(e) = logger::init_global_logger("testgen.log") {
-            eprintln!("Fatal: Failed to initialize verbose logger (testgen.log): {}", e);
+            eprintln!(
+                "Fatal: Failed to initialize verbose logger (testgen.log): {}",
+                e
+            );
             return Err(AppError::Io(e));
         }
         verbose_println!(quiet_mode, "Verbose logging initialized to testgen.log");
@@ -22,10 +25,19 @@ pub fn run_app(cli: Cli) -> Result<(), AppError> {
     let python_module_name =
         file_handler::validate_python_file_and_get_module(python_file_path, quiet_mode)?;
 
-    verbose_println!(quiet_mode, "\n============================================================");
-    verbose_println!(quiet_mode, "Processing File: {}", python_file_path.display());
-    verbose_println!(quiet_mode, "============================================================");
-
+    verbose_println!(
+        quiet_mode,
+        "\n============================================================"
+    );
+    verbose_println!(
+        quiet_mode,
+        "Processing File: {}",
+        python_file_path.display()
+    );
+    verbose_println!(
+        quiet_mode,
+        "============================================================"
+    );
 
     let ast_func_defs = processing::load_functions_from_file(python_file_path, quiet_mode)?;
 
@@ -42,15 +54,14 @@ pub fn run_app(cli: Cli) -> Result<(), AppError> {
     let mut any_tests_generated_overall = false;
 
     let cfg_log_file_path = Path::new("cfg_details.log");
-    let mut cfg_log_writer =
-        file_handler::init_cfg_log_writer(cfg_log_file_path).map_err(|e| {
-            verbose_eprintln!(
-                quiet_mode,
-                "[ERROR] Failed to open CFG details log (cfg_details.log): {}", // Enhanced error
-                e
-            );
-            AppError::Io(e)
-        })?;
+    let mut cfg_log_writer = file_handler::init_cfg_log_writer(cfg_log_file_path).map_err(|e| {
+        verbose_eprintln!(
+            quiet_mode,
+            "[ERROR] Failed to open CFG details log (cfg_details.log): {}", // Enhanced error
+            e
+        );
+        AppError::Io(e)
+    })?;
 
     for func_def in &ast_func_defs {
         match processing::process_single_function(
@@ -79,13 +90,22 @@ pub fn run_app(cli: Cli) -> Result<(), AppError> {
     }
     // Add a final separator after all functions are processed
     if !ast_func_defs.is_empty() && !quiet_mode {
-         verbose_println!(quiet_mode, "\n------------------------------------------------------------");
-         verbose_println!(quiet_mode, "Function Processing Complete");
-         verbose_println!(quiet_mode, "------------------------------------------------------------");
+        verbose_println!(
+            quiet_mode,
+            "\n------------------------------------------------------------"
+        );
+        verbose_println!(quiet_mode, "Function Processing Complete");
+        verbose_println!(
+            quiet_mode,
+            "------------------------------------------------------------"
+        );
     }
 
-
-    if any_tests_generated_overall || !all_pytest_functions.iter().all(|s| s.trim().starts_with('#')) {
+    if any_tests_generated_overall
+        || !all_pytest_functions
+            .iter()
+            .all(|s| s.trim().starts_with('#'))
+    {
         let mut final_pytest_content = String::new();
         final_pytest_content.push_str("import pytest\n\n");
 

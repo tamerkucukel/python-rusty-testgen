@@ -1,7 +1,7 @@
 mod cli;
 mod error;
 mod file_handler; // Keep name file_handler for now
-mod logger;       // Add logger module
+mod logger; // Add logger module
 mod orchestrator;
 mod processing;
 
@@ -26,5 +26,5 @@ macro_rules! verbose_eprintln {
         }
     };
 }
-use verbose_println;
 use verbose_eprintln;
+use verbose_println;

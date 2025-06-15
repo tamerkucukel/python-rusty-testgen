@@ -4,9 +4,9 @@ use std::io::Write;
 
 use crate::cfg::{ControlFlowGraph, Edge, Node, NodeId};
 use rustpython_ast::{
-    Arg, BoolOp, CmpOp, Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare,
-    ExprConstant, ExprName, ExprUnaryOp, Keyword, Operator, Stmt, StmtAssert, StmtAssign,
-    StmtAugAssign, StmtExpr, StmtPass, StmtRaise, StmtReturn, UnaryOp,
+    Arg, BoolOp, CmpOp, Constant, Expr, ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant,
+    ExprName, ExprUnaryOp, Keyword, Operator, Stmt, StmtAssert, StmtAssign, StmtAugAssign,
+    StmtExpr, StmtPass, StmtRaise, StmtReturn, UnaryOp,
 };
 
 // Helper function to format an Expr AST node into a Python-like string
@@ -14,7 +14,9 @@ fn format_expr(expr: &Expr) -> String {
     match &expr {
         Expr::Constant(ExprConstant { value, .. }) => format_constant(value),
         Expr::Name(ExprName { id, .. }) => id.to_string(),
-        Expr::BinOp(ExprBinOp { left, op, right, .. }) => {
+        Expr::BinOp(ExprBinOp {
+            left, op, right, ..
+        }) => {
             format!(
                 "({}) {} ({})",
                 format_expr(left),
@@ -38,7 +40,11 @@ fn format_expr(expr: &Expr) -> String {
         }) => {
             let mut s = format_expr(left);
             for (op, comp) in ops.iter().zip(comparators.iter()) {
-                s.push_str(&format!(" {} {}", format_cmp_operator(op), format_expr(comp)));
+                s.push_str(&format!(
+                    " {} {}",
+                    format_cmp_operator(op),
+                    format_expr(comp)
+                ));
             }
             s
         }
@@ -49,7 +55,11 @@ fn format_expr(expr: &Expr) -> String {
             ..
         }) => {
             let func_str = format_expr(func);
-            let args_str = args.iter().map(format_expr).collect::<Vec<String>>().join(", ");
+            let args_str = args
+                .iter()
+                .map(format_expr)
+                .collect::<Vec<String>>()
+                .join(", ");
             let keywords_str = keywords
                 .iter()
                 .map(|kw| {
@@ -78,7 +88,13 @@ fn format_constant(constant: &Constant) -> String {
     match constant {
         Constant::Int(i) => i.to_string(),
         Constant::Float(f) => f.to_string(),
-        Constant::Bool(b) => if *b { "True".to_string() } else { "False".to_string() },
+        Constant::Bool(b) => {
+            if *b {
+                "True".to_string()
+            } else {
+                "False".to_string()
+            }
+        }
         Constant::Str(s) => format!("\"{}\"", s.to_string().escape_default()), // Use .to_string() for LocatedString
         Constant::None => "None".to_string(),
         Constant::Ellipsis => "...".to_string(),
@@ -145,7 +161,11 @@ fn format_stmt(stmt: &Stmt) -> String {
             type_comment: _, // Ignoring type_comment for simplicity
             ..
         }) => {
-            let targets_str = targets.iter().map(format_expr).collect::<Vec<String>>().join(", ");
+            let targets_str = targets
+                .iter()
+                .map(format_expr)
+                .collect::<Vec<String>>()
+                .join(", ");
             format!("{} = {}", targets_str, format_expr(value))
         }
         Stmt::Expr(StmtExpr { value, .. }) => format_expr(value),
@@ -158,10 +178,7 @@ fn format_stmt(stmt: &Stmt) -> String {
         }
         Stmt::Pass(_) => "pass".to_string(),
         Stmt::AugAssign(StmtAugAssign {
-            target,
-            op,
-            value,
-            ..
+            target, op, value, ..
         }) => {
             format!(
                 "{} {}= {}",
@@ -234,7 +251,11 @@ impl PathScraper {
                             writeln!(writer, "    Stmt: {}", format_stmt(s))?;
                         }
                         writeln!(writer, "    Condition: {}", format_expr(expr))?;
-                        writeln!(writer, "    Successors: True -> {}, False -> {}", succ[0], succ[1])?;
+                        writeln!(
+                            writer,
+                            "    Successors: True -> {}, False -> {}",
+                            succ[0], succ[1]
+                        )?;
                     }
                     Node::Return { stmts, stmt } => {
                         writeln!(writer, "  Type: Return")?;

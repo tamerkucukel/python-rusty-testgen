@@ -1,30 +1,15 @@
 use crate::cfg::{ControlFlowGraph, Edge, Node, NodeId};
 use rustpython_ast::{
-    BoolOp,
-    CmpOp,
-    Constant,
-    Expr,
-    ExprBinOp, 
-    ExprBoolOp,
-    ExprCompare,
-    ExprConstant,
-    ExprContext,
-    ExprName,
-    ExprUnaryOp,
-    Operator,
-    Stmt,
-    StmtAssert,
-    StmtAssign,
-    StmtAugAssign,
-    StmtExpr,
+    BoolOp, CmpOp, Constant, Expr, ExprBinOp, ExprBoolOp, ExprCompare, ExprConstant, ExprContext,
+    ExprName, ExprUnaryOp, Operator, Stmt, StmtAssert, StmtAssign, StmtAugAssign, StmtExpr,
     UnaryOp,
 };
 use std::collections::HashMap;
 // Import Z3 Real type
-use z3::ast::{Ast, Bool, Dynamic, Int, Real, String as Z3String}; // Added Real
+use z3::ast::{Ast, Bool, Dynamic, Int, Real, String as Z3String};
 use z3::{Config, Context, SatResult, Solver};
 
-use super::error::Z3Error; // Ensure Z3Error is in scope
+use super::error::Z3Error;
 
 /// Stores the result of a Z3 satisfiability check for a single path.
 #[derive(Debug, Clone)]
@@ -54,13 +39,17 @@ struct Z3ConstraintGenerator<'cfg> {
 macro_rules! get_or_create_z3_var {
     ($self:ident, $name:expr, $z3_type:ty, $constructor_fn:path, $caster_method:ident, $type_name_str:expr) => {
         if let Some(ast_node) = $self.variable_map.get($name) {
-            ast_node.$caster_method().ok_or_else(|| Z3Error::TypeMismatch {
-                variable_name: $name.to_string(),
-                expected_type: $type_name_str.to_string(),
-            })
+            ast_node
+                .$caster_method()
+                .ok_or_else(|| Z3Error::TypeMismatch {
+                    variable_name: $name.to_string(),
+                    expected_type: $type_name_str.to_string(),
+                })
         } else {
             let new_var = $constructor_fn($self.z3_ctx, $name);
-            $self.variable_map.insert($name.to_string(), Dynamic::from_ast(&new_var));
+            $self
+                .variable_map
+                .insert($name.to_string(), Dynamic::from_ast(&new_var));
             Ok(new_var)
         }
     };
@@ -89,7 +78,8 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                         let new_var = Z3String::new_const(ctx, name.as_str());
                         variable_map.insert(name.clone(), Dynamic::from_ast(&new_var));
                     }
-                    "float" => { // Added float handling
+                    "float" => {
+                        // Added float handling
                         let new_var = Real::new_const(ctx, name.as_str());
                         variable_map.insert(name.clone(), Dynamic::from_ast(&new_var));
                     }
@@ -128,7 +118,8 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                         self.variable_map
                             .insert(name.clone(), Dynamic::from_ast(&new_var));
                     }
-                    "float" => { // Added float handling
+                    "float" => {
+                        // Added float handling
                         let new_var = Real::new_const(self.z3_ctx, name.as_str());
                         self.variable_map
                             .insert(name.clone(), Dynamic::from_ast(&new_var));
@@ -140,12 +131,11 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
         Ok(())
     }
 
-
     /// Retrieves an existing Z3 integer variable or creates a new one if not found.
     fn get_or_create_int_var(&mut self, name: &str) -> Result<Int<'cfg>, Z3Error> {
         get_or_create_z3_var!(self, name, Int<'cfg>, Int::new_const, as_int, "Int")
     }
-    
+
     /// Retrieves an existing Z3 boolean variable or creates a new one if not found.
     fn get_or_create_bool_var(&mut self, name: &str) -> Result<Bool<'cfg>, Z3Error> {
         get_or_create_z3_var!(self, name, Bool<'cfg>, Bool::new_const, as_bool, "Bool")
@@ -153,7 +143,14 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
 
     /// Retrieves an existing Z3 string variable or creates a new one if not found.
     fn get_or_create_string_var(&mut self, name: &str) -> Result<Z3String<'cfg>, Z3Error> {
-        get_or_create_z3_var!(self, name, Z3String<'cfg>, Z3String::new_const, as_string, "String")
+        get_or_create_z3_var!(
+            self,
+            name,
+            Z3String<'cfg>,
+            Z3String::new_const,
+            as_string,
+            "String"
+        )
     }
 
     /// Retrieves an existing Z3 real variable or creates a new one if not found.
@@ -163,7 +160,8 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
 
     /// Converts a Python AST `Expr` to a Z3 `Int` AST.
     fn python_expr_to_z3_int(&mut self, expr: &Expr) -> Result<Int<'cfg>, Z3Error> {
-        match &expr { // Changed to match &expr
+        match &expr {
+            // Changed to match &expr
             Expr::Constant(ExprConstant { value, .. }) => match value {
                 Constant::Int(i) => {
                     let i64_val = i.try_into().map_err(|_| {
@@ -185,10 +183,12 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
 
     /// Converts a Python AST `Expr` to a Z3 `String` AST.
     fn python_expr_to_z3_string(&mut self, expr: &Expr) -> Result<Z3String<'cfg>, Z3Error> {
-        match &expr { // Changed to match &expr
+        match &expr {
+            // Changed to match &expr
             Expr::Constant(ExprConstant { value, .. }) => match value {
-                Constant::Str(s) => Z3String::from_str(self.z3_ctx, s.as_str())
-                    .map_err(|e| Z3Error::TypeConversion(format!("Failed to create Z3 string: {}", e))),
+                Constant::Str(s) => Z3String::from_str(self.z3_ctx, s.as_str()).map_err(|e| {
+                    Z3Error::TypeConversion(format!("Failed to create Z3 string: {}", e))
+                }),
                 _ => Err(Z3Error::UnsupportedConstant {
                     value: value.clone(),
                     reason: "Expected a string constant for Z3 String conversion.".to_string(),
@@ -203,14 +203,20 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
 
     /// Converts a Python AST `Expr` to a Z3 `Real` AST.
     fn python_expr_to_z3_real(&mut self, expr: &Expr) -> Result<Real<'cfg>, Z3Error> {
-        match &expr { // Changed to match &expr
+        match &expr {
+            // Changed to match &expr
             Expr::Constant(ExprConstant { value, .. }) => match value {
                 Constant::Float(f) => {
                     // Z3 Real::from_real expects a numerator and denominator
                     // For floats, we'll use the string representation and convert to rational
-                    Ok(Real::from_real(self.z3_ctx, f.to_string().parse::<i32>().unwrap_or(0), 1))
+                    Ok(Real::from_real(
+                        self.z3_ctx,
+                        f.to_string().parse::<i32>().unwrap_or(0),
+                        1,
+                    ))
                 }
-                Constant::Int(i) => { // Allow int to be converted to real
+                Constant::Int(i) => {
+                    // Allow int to be converted to real
                     let i_val: i32 = i.try_into().map_err(|_| {
                         Z3Error::TypeConversion(format!("Integer value {} too large for i32", i))
                     })?;
@@ -228,10 +234,119 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
         }
     }
 
+    /// Performs a single comparison between two Z3 dynamic values.
+    fn perform_single_z3_comparison(
+        &self,
+        z3_lhs_dynamic: &Dynamic<'cfg>,
+        z3_rhs_dynamic: &Dynamic<'cfg>,
+        op: CmpOp,
+    ) -> Result<Bool<'cfg>, Z3Error> {
+        match (
+            z3_lhs_dynamic.get_sort().kind(),
+            z3_rhs_dynamic.get_sort().kind(),
+        ) {
+            (z3::SortKind::Int, z3::SortKind::Int) => {
+                let l = z3_lhs_dynamic.as_int().unwrap();
+                let r = z3_rhs_dynamic.as_int().unwrap();
+                match op {
+                    CmpOp::Eq => Ok(l._eq(&r)),
+                    CmpOp::NotEq => Ok(l._eq(&r).not()),
+                    CmpOp::Lt => Ok(l.lt(&r)),
+                    CmpOp::LtE => Ok(l.le(&r)),
+                    CmpOp::Gt => Ok(l.gt(&r)),
+                    CmpOp::GtE => Ok(l.ge(&r)),
+                    _ => Err(Z3Error::UnsupportedCmpOperatorForSort {
+                        op,
+                        sort_name: "Int".to_string(),
+                    }),
+                }
+            }
+            (z3::SortKind::Bool, z3::SortKind::Bool) => {
+                let l = z3_lhs_dynamic.as_bool().unwrap();
+                let r = z3_rhs_dynamic.as_bool().unwrap();
+                match op {
+                    CmpOp::Eq => Ok(l._eq(&r)),
+                    CmpOp::NotEq => Ok(l._eq(&r).not()),
+                    _ => Err(Z3Error::UnsupportedCmpOperatorForSort {
+                        op,
+                        sort_name: "Bool".to_string(),
+                    }),
+                }
+            }
+            (z3::SortKind::Seq, z3::SortKind::Seq) => {
+                // String comparison
+                let l = z3_lhs_dynamic.as_string().unwrap();
+                let r = z3_rhs_dynamic.as_string().unwrap();
+                match op {
+                    CmpOp::Eq => Ok(l._eq(&r)),
+                    CmpOp::NotEq => Ok(l._eq(&r).not()),
+                    _ => Err(Z3Error::UnsupportedCmpOperatorForSort {
+                        op,
+                        sort_name: "String".to_string(),
+                    }),
+                }
+            }
+            (z3::SortKind::Real, z3::SortKind::Real) => {
+                let l = z3_lhs_dynamic.as_real().unwrap();
+                let r = z3_rhs_dynamic.as_real().unwrap();
+                match op {
+                    CmpOp::Eq => Ok(l._eq(&r)),
+                    CmpOp::NotEq => Ok(l._eq(&r).not()),
+                    CmpOp::Lt => Ok(l.lt(&r)),
+                    CmpOp::LtE => Ok(l.le(&r)),
+                    CmpOp::Gt => Ok(l.gt(&r)),
+                    CmpOp::GtE => Ok(l.ge(&r)),
+                    _ => Err(Z3Error::UnsupportedCmpOperatorForSort {
+                        op,
+                        sort_name: "Real".to_string(),
+                    }),
+                }
+            }
+            (z3::SortKind::Int, z3::SortKind::Real) => {
+                let l_int = z3_lhs_dynamic.as_int().unwrap();
+                let l = Real::from_int(&l_int);
+                let r = z3_rhs_dynamic.as_real().unwrap();
+                match op {
+                    CmpOp::Eq => Ok(l._eq(&r)),
+                    CmpOp::NotEq => Ok(l._eq(&r).not()),
+                    CmpOp::Lt => Ok(l.lt(&r)),
+                    CmpOp::LtE => Ok(l.le(&r)),
+                    CmpOp::Gt => Ok(l.gt(&r)),
+                    CmpOp::GtE => Ok(l.ge(&r)),
+                    _ => Err(Z3Error::UnsupportedCmpOperatorForSort {
+                        op,
+                        sort_name: "Int/Real".to_string(),
+                    }),
+                }
+            }
+            (z3::SortKind::Real, z3::SortKind::Int) => {
+                let l = z3_lhs_dynamic.as_real().unwrap();
+                let r_int = z3_rhs_dynamic.as_int().unwrap();
+                let r = Real::from_int(&r_int);
+                match op {
+                    CmpOp::Eq => Ok(l._eq(&r)),
+                    CmpOp::NotEq => Ok(l._eq(&r).not()),
+                    CmpOp::Lt => Ok(l.lt(&r)),
+                    CmpOp::LtE => Ok(l.le(&r)),
+                    CmpOp::Gt => Ok(l.gt(&r)),
+                    CmpOp::GtE => Ok(l.ge(&r)),
+                    _ => Err(Z3Error::UnsupportedCmpOperatorForSort {
+                        op,
+                        sort_name: "Real/Int".to_string(),
+                    }),
+                }
+            }
+            (left_kind, right_kind) => Err(Z3Error::TypeMismatchInComparison {
+                op,
+                left_type: format!("{:?}", left_kind),
+                right_type: format!("{:?}", right_kind),
+            }),
+        }
+    }
 
     /// Converts a Python AST `Expr` to a Z3 `Bool` AST.
     fn python_expr_to_z3_bool(&mut self, expr: &Expr) -> Result<Bool<'cfg>, Z3Error> {
-        match &expr { // Changed to match &expr
+        match &expr {
             Expr::Constant(ExprConstant { value, .. }) => match value {
                 Constant::Bool(b) => Ok(Bool::from_bool(self.z3_ctx, *b)),
                 _ => Err(Z3Error::UnsupportedConstant {
@@ -255,7 +370,7 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                     .iter()
                     .map(|val_expr| self.python_expr_to_z3_bool(val_expr))
                     .collect();
-                let z3_operands = z3_operands?; 
+                let z3_operands = z3_operands?;
 
                 let operands_ref: Vec<&Bool<'_>> = z3_operands.iter().collect();
                 match op {
@@ -263,102 +378,62 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                     BoolOp::Or => Ok(Bool::or(self.z3_ctx, &operands_ref)),
                 }
             }
-            Expr::Compare(ExprCompare { left, ops, comparators, .. }) => {
-                if ops.len() != 1 || comparators.len() != 1 {
-                    return Err(Z3Error::ChainedComparisonNotSupported);
+            Expr::Compare(ExprCompare {
+                left,
+                ops,
+                comparators,
+                ..
+            }) => {
+                if ops.is_empty() || ops.len() != comparators.len() {
+                    // This case should ideally not be hit if the AST is well-formed from rustpython-parser.
+                    return Err(Z3Error::MalformedExpression(
+                        "Compare node has mismatched ops and comparators or empty ops.".to_string(),
+                    ));
                 }
 
-                let z3_left_dynamic = self.python_expr_to_z3_dynamic(left)?;
-                let z3_right_dynamic = self.python_expr_to_z3_dynamic(&comparators[0])?;
-                let op = ops[0];
+                let mut all_sub_comparisons: Vec<Bool<'cfg>> = Vec::with_capacity(ops.len());
 
-                match (z3_left_dynamic.get_sort().kind(), z3_right_dynamic.get_sort().kind()) {
-                    (z3::SortKind::Int, z3::SortKind::Int) => {
-                        let l = z3_left_dynamic.as_int().unwrap(); 
-                        let r = z3_right_dynamic.as_int().unwrap();
-                        match op {
-                            CmpOp::Eq => Ok(l._eq(&r)),
-                            CmpOp::NotEq => Ok(l._eq(&r).not()),
-                            CmpOp::Lt => Ok(l.lt(&r)),
-                            CmpOp::LtE => Ok(l.le(&r)),
-                            CmpOp::Gt => Ok(l.gt(&r)),
-                            CmpOp::GtE => Ok(l.ge(&r)),
-                            _ => Err(Z3Error::UnsupportedCmpOperatorForSort { op, sort_name: "Int".to_string() }),
-                        }
-                    }
-                    (z3::SortKind::Bool, z3::SortKind::Bool) => {
-                        let l = z3_left_dynamic.as_bool().unwrap();
-                        let r = z3_right_dynamic.as_bool().unwrap();
-                        match op {
-                            CmpOp::Eq => Ok(l._eq(&r)),
-                            CmpOp::NotEq => Ok(l._eq(&r).not()),
-                            _ => Err(Z3Error::UnsupportedCmpOperatorForSort { op, sort_name: "Bool".to_string() }),
-                        }
-                    }
-                    (z3::SortKind::Seq, z3::SortKind::Seq) => { // String comparison
-                        let l = z3_left_dynamic.as_string().unwrap();
-                        let r = z3_right_dynamic.as_string().unwrap();
-                        match op {
-                            CmpOp::Eq => Ok(l._eq(&r)),
-                            CmpOp::NotEq => Ok(l._eq(&r).not()),
-                            // Add Lt, LtE, Gt, GtE for strings if Z3 supports them (lexicographical)
-                            // For now, only Eq and NotEq for strings.
-                            _ => Err(Z3Error::UnsupportedCmpOperatorForSort { op, sort_name: "String".to_string() }),
-                        }
-                    }
-                    (z3::SortKind::Real, z3::SortKind::Real) => { // Added Real comparison
-                        let l = z3_left_dynamic.as_real().unwrap();
-                        let r = z3_right_dynamic.as_real().unwrap();
-                        match op {
-                            CmpOp::Eq => Ok(l._eq(&r)),
-                            CmpOp::NotEq => Ok(l._eq(&r).not()),
-                            CmpOp::Lt => Ok(l.lt(&r)),
-                            CmpOp::LtE => Ok(l.le(&r)),
-                            CmpOp::Gt => Ok(l.gt(&r)),
-                            CmpOp::GtE => Ok(l.ge(&r)),
-                            _ => Err(Z3Error::UnsupportedCmpOperatorForSort { op, sort_name: "Real".to_string() }),
-                        }
-                    }
-                    // Allow comparison between Int and Real by promoting Int to Real
-                    (z3::SortKind::Int, z3::SortKind::Real) => {
-                        let l_int = z3_left_dynamic.as_int().unwrap();
-                        let l = Real::from_int(&l_int); // Promote Int to Real
-                        let r = z3_right_dynamic.as_real().unwrap();
-                        match op {
-                            CmpOp::Eq => Ok(l._eq(&r)), CmpOp::NotEq => Ok(l._eq(&r).not()),
-                            CmpOp::Lt => Ok(l.lt(&r)), CmpOp::LtE => Ok(l.le(&r)),
-                            CmpOp::Gt => Ok(l.gt(&r)), CmpOp::GtE => Ok(l.ge(&r)),
-                            _ => Err(Z3Error::UnsupportedCmpOperatorForSort { op, sort_name: "Int/Real".to_string() }),
-                        }
-                    }
-                    (z3::SortKind::Real, z3::SortKind::Int) => {
-                        let l = z3_left_dynamic.as_real().unwrap();
-                        let r_int = z3_right_dynamic.as_int().unwrap();
-                        let r = Real::from_int(&r_int); // Promote Int to Real
-                        match op {
-                            CmpOp::Eq => Ok(l._eq(&r)), CmpOp::NotEq => Ok(l._eq(&r).not()),
-                            CmpOp::Lt => Ok(l.lt(&r)), CmpOp::LtE => Ok(l.le(&r)),
-                            CmpOp::Gt => Ok(l.gt(&r)), CmpOp::GtE => Ok(l.ge(&r)),
-                            _ => Err(Z3Error::UnsupportedCmpOperatorForSort { op, sort_name: "Real/Int".to_string() }),
-                        }
-                    }
-                    (left_kind, right_kind) => Err(Z3Error::TypeMismatchInComparison {
-                        op,
-                        left_type: format!("{:?}", left_kind),
-                        right_type: format!("{:?}", right_kind),
-                    }),
+                let mut current_lhs_ast_expr = left.as_ref(); // Initial LHS is the `left` field of ExprCompare
+
+                for i in 0..ops.len() {
+                    let current_rhs_ast_expr = &comparators[i];
+                    let current_op = ops[i];
+
+                    let z3_lhs_dynamic = self.python_expr_to_z3_dynamic(current_lhs_ast_expr)?;
+                    let z3_rhs_dynamic = self.python_expr_to_z3_dynamic(current_rhs_ast_expr)?;
+
+                    let sub_comparison_result = self.perform_single_z3_comparison(
+                        &z3_lhs_dynamic,
+                        &z3_rhs_dynamic,
+                        current_op,
+                    )?;
+                    all_sub_comparisons.push(sub_comparison_result);
+
+                    // For the next iteration, the current RHS becomes the next LHS
+                    current_lhs_ast_expr = current_rhs_ast_expr;
+                }
+
+                if all_sub_comparisons.len() == 1 {
+                    // Ok(all_sub_comparisons.remove(0)) // remove(0) is inefficient for Vec
+                    Ok(all_sub_comparisons.pop().unwrap()) // More efficient for single element
+                } else {
+                    // For multiple comparisons (chained), AND them together.
+                    let refs_to_sub_comparisons: Vec<&Bool<'_>> =
+                        all_sub_comparisons.iter().collect();
+                    Ok(Bool::and(self.z3_ctx, &refs_to_sub_comparisons))
                 }
             }
             _ => Err(Z3Error::UnsupportedExpressionType {
-                expr_repr: format!("{:?}", expr), // Use expr
+                expr_repr: format!("{:?}", expr),
             }),
         }
     }
 
-    /// Converts a Python `Expr` to a Z3 `Dynamic` AST.
+    /// Converts a Python AST `Expr` to a Z3 `Dynamic` AST.
     fn python_expr_to_z3_dynamic(&mut self, expr: &Expr) -> Result<Dynamic<'cfg>, Z3Error> {
         // Try converting to specific types first, then fallback or handle BinOp
-        if let Ok(r_val) = self.python_expr_to_z3_real(expr) { // Try Real first
+        if let Ok(r_val) = self.python_expr_to_z3_real(expr) {
+            // Try Real first
             return Ok(Dynamic::from_ast(&r_val));
         }
         if let Ok(s_val) = self.python_expr_to_z3_string(expr) {
@@ -367,11 +442,16 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
         if let Ok(b_val) = self.python_expr_to_z3_bool(expr) {
             return Ok(Dynamic::from_ast(&b_val));
         }
-        if let Ok(i_val) = self.python_expr_to_z3_int(expr) { // Int last, as it could be promoted to Real
+        if let Ok(i_val) = self.python_expr_to_z3_int(expr) {
+            // Int last, as it could be promoted to Real
             return Ok(Dynamic::from_ast(&i_val));
         }
-        
-        if let Expr::BinOp(ExprBinOp { left, op, right, .. }) = &expr { // Use &expr
+
+        if let Expr::BinOp(ExprBinOp {
+            left, op, right, ..
+        }) = &expr
+        {
+            // Use &expr
             // For BinOp, determine if it's Real or Int arithmetic
             // This is a simplification: assumes homogeneous operations or promotes Int to Real.
             // A more robust solution would inspect types more deeply or rely on type inference.
@@ -379,13 +459,30 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
             let right_dyn = self.python_expr_to_z3_dynamic(right)?;
 
             match (left_dyn.get_sort().kind(), right_dyn.get_sort().kind()) {
-                (z3::SortKind::Real, z3::SortKind::Real) | (z3::SortKind::Real, z3::SortKind::Int) | (z3::SortKind::Int, z3::SortKind::Real) => {
-                    let left_val = left_dyn.as_real().or_else(|| left_dyn.as_int().map(|i| Real::from_int(&i))).unwrap();
-                    let right_val = right_dyn.as_real().or_else(|| right_dyn.as_int().map(|i| Real::from_int(&i))).unwrap();
+                (z3::SortKind::Real, z3::SortKind::Real)
+                | (z3::SortKind::Real, z3::SortKind::Int)
+                | (z3::SortKind::Int, z3::SortKind::Real) => {
+                    let left_val = left_dyn
+                        .as_real()
+                        .or_else(|| left_dyn.as_int().map(|i| Real::from_int(&i)))
+                        .unwrap();
+                    let right_val = right_dyn
+                        .as_real()
+                        .or_else(|| right_dyn.as_int().map(|i| Real::from_int(&i)))
+                        .unwrap();
                     match op {
-                        Operator::Add => Ok(Dynamic::from_ast(&Real::add(self.z3_ctx, &[&left_val, &right_val]))),
-                        Operator::Sub => Ok(Dynamic::from_ast(&Real::sub(self.z3_ctx, &[&left_val, &right_val]))),
-                        Operator::Mult => Ok(Dynamic::from_ast(&Real::mul(self.z3_ctx, &[&left_val, &right_val]))),
+                        Operator::Add => Ok(Dynamic::from_ast(&Real::add(
+                            self.z3_ctx,
+                            &[&left_val, &right_val],
+                        ))),
+                        Operator::Sub => Ok(Dynamic::from_ast(&Real::sub(
+                            self.z3_ctx,
+                            &[&left_val, &right_val],
+                        ))),
+                        Operator::Mult => Ok(Dynamic::from_ast(&Real::mul(
+                            self.z3_ctx,
+                            &[&left_val, &right_val],
+                        ))),
                         Operator::Div => Ok(Dynamic::from_ast(&Real::div(&left_val, &right_val))),
                         _ => Err(Z3Error::UnsupportedExpressionType {
                             expr_repr: format!("Unsupported binary operator {:?} for Reals", op),
@@ -395,10 +492,19 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                 (z3::SortKind::Int, z3::SortKind::Int) => {
                     let left_val = left_dyn.as_int().unwrap();
                     let right_val = right_dyn.as_int().unwrap();
-                     match op {
-                        Operator::Add => Ok(Dynamic::from_ast(&Int::add(self.z3_ctx, &[&left_val, &right_val]))),
-                        Operator::Sub => Ok(Dynamic::from_ast(&Int::sub(self.z3_ctx, &[&left_val, &right_val]))),
-                        Operator::Mult => Ok(Dynamic::from_ast(&Int::mul(self.z3_ctx, &[&left_val, &right_val]))),
+                    match op {
+                        Operator::Add => Ok(Dynamic::from_ast(&Int::add(
+                            self.z3_ctx,
+                            &[&left_val, &right_val],
+                        ))),
+                        Operator::Sub => Ok(Dynamic::from_ast(&Int::sub(
+                            self.z3_ctx,
+                            &[&left_val, &right_val],
+                        ))),
+                        Operator::Mult => Ok(Dynamic::from_ast(&Int::mul(
+                            self.z3_ctx,
+                            &[&left_val, &right_val],
+                        ))),
                         // Integer division would be Int::div, but Python's / on ints can produce float.
                         // For now, sticking to Z3 Int ops if both are Int.
                         _ => Err(Z3Error::UnsupportedExpressionType {
@@ -407,8 +513,12 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                     }
                 }
                 _ => Err(Z3Error::UnsupportedExpressionType {
-                    expr_repr: format!("Unsupported binary operation between sorts {:?} and {:?}", left_dyn.get_sort().kind(), right_dyn.get_sort().kind()),
-                })
+                    expr_repr: format!(
+                        "Unsupported binary operation between sorts {:?} and {:?}",
+                        left_dyn.get_sort().kind(),
+                        right_dyn.get_sort().kind()
+                    ),
+                }),
             }
         } else {
             Err(Z3Error::UnsupportedExpressionType {
@@ -423,10 +533,12 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
         stmt: &Stmt,
         assertions: &mut Vec<Bool<'cfg>>,
     ) -> Result<(), Z3Error> {
-        match &stmt { // Changed to match &stmt
+        match &stmt {
+            // Changed to match &stmt
             Stmt::Assign(StmtAssign { targets, value, .. }) => {
                 if targets.len() == 1 {
-                    if let Expr::Name(ExprName { id, ctx, .. }) = &targets[0] { // Use .node
+                    if let Expr::Name(ExprName { id, ctx, .. }) = &targets[0] {
+                        // Use .node
                         if matches!(ctx, ExprContext::Store) {
                             let target_name = id.to_string();
                             let z3_rhs_value = self.python_expr_to_z3_dynamic(value)?;
@@ -434,11 +546,26 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                             // Create a new SSA variable for the assignment
                             let new_lhs_z3_var_name_prefix = format!("{}_assigned", target_name);
                             let new_lhs_z3_var = match z3_rhs_value.get_sort().kind() {
-                                z3::SortKind::Bool => Dynamic::from_ast(&Bool::fresh_const(self.z3_ctx, &new_lhs_z3_var_name_prefix)),
-                                z3::SortKind::Int => Dynamic::from_ast(&Int::fresh_const(self.z3_ctx, &new_lhs_z3_var_name_prefix)),
-                                z3::SortKind::Seq => Dynamic::from_ast(&Z3String::fresh_const(self.z3_ctx, &new_lhs_z3_var_name_prefix)),
-                                z3::SortKind::Real => Dynamic::from_ast(&Real::fresh_const(self.z3_ctx, &new_lhs_z3_var_name_prefix)), // Added Real
-                                sort_kind => return Err(Z3Error::TypeConversion(format!("Unsupported Z3 sort {:?} for assignment target's new value", sort_kind))),
+                                z3::SortKind::Bool => Dynamic::from_ast(&Bool::fresh_const(
+                                    self.z3_ctx,
+                                    &new_lhs_z3_var_name_prefix,
+                                )),
+                                z3::SortKind::Int => Dynamic::from_ast(&Int::fresh_const(
+                                    self.z3_ctx,
+                                    &new_lhs_z3_var_name_prefix,
+                                )),
+                                z3::SortKind::Seq => Dynamic::from_ast(&Z3String::fresh_const(
+                                    self.z3_ctx,
+                                    &new_lhs_z3_var_name_prefix,
+                                )),
+                                z3::SortKind::Real => Dynamic::from_ast(&Real::fresh_const(
+                                    self.z3_ctx,
+                                    &new_lhs_z3_var_name_prefix,
+                                )), // Added Real
+                                sort_kind => return Err(Z3Error::TypeConversion(format!(
+                                    "Unsupported Z3 sort {:?} for assignment target's new value",
+                                    sort_kind
+                                ))),
                             };
 
                             assertions.push(new_lhs_z3_var._eq(&z3_rhs_value));
@@ -448,45 +575,108 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                     }
                 }
             }
-            Stmt::AugAssign(StmtAugAssign { target, op, value, .. }) => {
-                 if let Expr::Name(ExprName { id, ctx, .. }) = target.as_ref() {
-                    if matches!(ctx, ExprContext::Store) { 
+            Stmt::AugAssign(StmtAugAssign {
+                target, op, value, ..
+            }) => {
+                if let Expr::Name(ExprName { id, ctx, .. }) = target.as_ref() {
+                    if matches!(ctx, ExprContext::Store) {
                         let target_name = id.to_string();
                         // Current value of the target (LHS)
                         let lhs_current_z3_val = self.python_expr_to_z3_dynamic(target)?;
                         // Value of the RHS of AugAssign
                         let rhs_z3_val = self.python_expr_to_z3_dynamic(value)?;
-                        
-                        let result_val_dynamic = match (lhs_current_z3_val.get_sort().kind(), rhs_z3_val.get_sort().kind()) {
-                            (z3::SortKind::Real, z3::SortKind::Real) | (z3::SortKind::Real, z3::SortKind::Int) | (z3::SortKind::Int, z3::SortKind::Real) => {
-                                let lhs_real = lhs_current_z3_val.as_real().or_else(|| lhs_current_z3_val.as_int().map(|i| Real::from_int(&i))).unwrap();
-                                let rhs_real = rhs_z3_val.as_real().or_else(|| rhs_z3_val.as_int().map(|i| Real::from_int(&i))).unwrap();
+
+                        let result_val_dynamic = match (
+                            lhs_current_z3_val.get_sort().kind(),
+                            rhs_z3_val.get_sort().kind(),
+                        ) {
+                            (z3::SortKind::Real, z3::SortKind::Real)
+                            | (z3::SortKind::Real, z3::SortKind::Int)
+                            | (z3::SortKind::Int, z3::SortKind::Real) => {
+                                let lhs_real = lhs_current_z3_val
+                                    .as_real()
+                                    .or_else(|| {
+                                        lhs_current_z3_val.as_int().map(|i| Real::from_int(&i))
+                                    })
+                                    .unwrap();
+                                let rhs_real = rhs_z3_val
+                                    .as_real()
+                                    .or_else(|| rhs_z3_val.as_int().map(|i| Real::from_int(&i)))
+                                    .unwrap();
                                 match op {
-                                    Operator::Add => Dynamic::from_ast(&Real::add(self.z3_ctx, &[&lhs_real, &rhs_real])),
-                                    Operator::Sub => Dynamic::from_ast(&Real::sub(self.z3_ctx, &[&lhs_real, &rhs_real])),
-                                    Operator::Mult => Dynamic::from_ast(&Real::mul(self.z3_ctx, &[&lhs_real, &rhs_real])),
-                                    Operator::Div => Dynamic::from_ast(&Real::div(&lhs_real, &rhs_real)),
-                                    _ => return Err(Z3Error::UnsupportedExpressionType { expr_repr: format!("Unsupported AugAssign operator {:?} for Reals", op) })
+                                    Operator::Add => Dynamic::from_ast(&Real::add(
+                                        self.z3_ctx,
+                                        &[&lhs_real, &rhs_real],
+                                    )),
+                                    Operator::Sub => Dynamic::from_ast(&Real::sub(
+                                        self.z3_ctx,
+                                        &[&lhs_real, &rhs_real],
+                                    )),
+                                    Operator::Mult => Dynamic::from_ast(&Real::mul(
+                                        self.z3_ctx,
+                                        &[&lhs_real, &rhs_real],
+                                    )),
+                                    Operator::Div => {
+                                        Dynamic::from_ast(&Real::div(&lhs_real, &rhs_real))
+                                    }
+                                    _ => {
+                                        return Err(Z3Error::UnsupportedExpressionType {
+                                            expr_repr: format!(
+                                                "Unsupported AugAssign operator {:?} for Reals",
+                                                op
+                                            ),
+                                        })
+                                    }
                                 }
                             }
                             (z3::SortKind::Int, z3::SortKind::Int) => {
                                 let lhs_int = lhs_current_z3_val.as_int().unwrap();
                                 let rhs_int = rhs_z3_val.as_int().unwrap();
                                 match op {
-                                    Operator::Add => Dynamic::from_ast(&Int::add(self.z3_ctx, &[&lhs_int, &rhs_int])),
-                                    Operator::Sub => Dynamic::from_ast(&Int::sub(self.z3_ctx, &[&lhs_int, &rhs_int])),
-                                    Operator::Mult => Dynamic::from_ast(&Int::mul(self.z3_ctx, &[&lhs_int, &rhs_int])),
-                                    _ => return Err(Z3Error::UnsupportedExpressionType { expr_repr: format!("Unsupported AugAssign operator {:?} for Ints", op) })
+                                    Operator::Add => Dynamic::from_ast(&Int::add(
+                                        self.z3_ctx,
+                                        &[&lhs_int, &rhs_int],
+                                    )),
+                                    Operator::Sub => Dynamic::from_ast(&Int::sub(
+                                        self.z3_ctx,
+                                        &[&lhs_int, &rhs_int],
+                                    )),
+                                    Operator::Mult => Dynamic::from_ast(&Int::mul(
+                                        self.z3_ctx,
+                                        &[&lhs_int, &rhs_int],
+                                    )),
+                                    _ => {
+                                        return Err(Z3Error::UnsupportedExpressionType {
+                                            expr_repr: format!(
+                                                "Unsupported AugAssign operator {:?} for Ints",
+                                                op
+                                            ),
+                                        })
+                                    }
                                 }
                             }
-                            (lk, rk) => return Err(Z3Error::TypeConversion(format!("Unsupported types for AugAssign: {:?} and {:?}", lk, rk))),
+                            (lk, rk) => {
+                                return Err(Z3Error::TypeConversion(format!(
+                                    "Unsupported types for AugAssign: {:?} and {:?}",
+                                    lk, rk
+                                )))
+                            }
                         };
 
                         let new_lhs_z3_var_name_prefix = format!("{}_aug_assigned", target_name);
                         let new_lhs_z3_var = match result_val_dynamic.get_sort().kind() {
-                             z3::SortKind::Int => Dynamic::from_ast(&Int::fresh_const(self.z3_ctx, &new_lhs_z3_var_name_prefix)),
-                             z3::SortKind::Real => Dynamic::from_ast(&Real::fresh_const(self.z3_ctx, &new_lhs_z3_var_name_prefix)), // Added Real
-                             sort_kind => return Err(Z3Error::TypeConversion(format!("Unsupported Z3 sort {:?} for aug-assignment target's new value", sort_kind))),
+                            z3::SortKind::Int => Dynamic::from_ast(&Int::fresh_const(
+                                self.z3_ctx,
+                                &new_lhs_z3_var_name_prefix,
+                            )),
+                            z3::SortKind::Real => Dynamic::from_ast(&Real::fresh_const(
+                                self.z3_ctx,
+                                &new_lhs_z3_var_name_prefix,
+                            )), // Added Real
+                            sort_kind => return Err(Z3Error::TypeConversion(format!(
+                                "Unsupported Z3 sort {:?} for aug-assignment target's new value",
+                                sort_kind
+                            ))),
                         };
 
                         assertions.push(new_lhs_z3_var._eq(&result_val_dynamic));
@@ -496,8 +686,8 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
             }
             Stmt::Expr(StmtExpr { value, .. }) => {
                 // Handle 'assert' calls if they appear as StmtExpr
-                if let Expr::Call(call_expr) = &**value { // Use .node
-                    if let Expr::Name(name_expr) = &*call_expr.func { // Use .node
+                if let Expr::Call(call_expr) = &**value {
+                    if let Expr::Name(name_expr) = &*call_expr.func {
                         if name_expr.id.as_str() == "assert" && !call_expr.args.is_empty() {
                             let condition = self.python_expr_to_z3_bool(&call_expr.args[0])?;
                             assertions.push(condition);
@@ -505,12 +695,12 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                     }
                 }
             }
-            Stmt::Assert(StmtAssert { test, .. }) => { 
+            Stmt::Assert(StmtAssert { test, .. }) => {
                 let condition = self.python_expr_to_z3_bool(test)?;
                 assertions.push(condition);
             }
             Stmt::Pass(_) => {} // No Z3 constraints for pass
-            _ => {} // Other statement types not directly contributing constraints here
+            _ => {}             // Other statement types not directly contributing constraints here
         }
         Ok(())
     }
@@ -528,13 +718,19 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                 .get_node(*node_id)
                 .ok_or(Z3Error::NodeNotFoundInCfg(*node_id))?;
             let stmts_to_process = match node {
-                Node::Cond { stmts, .. } | Node::Return { stmts, .. } | Node::Raise { stmts, .. } => stmts,
+                Node::Cond { stmts, .. }
+                | Node::Return { stmts, .. }
+                | Node::Raise { stmts, .. } => stmts,
             };
             for stmt in stmts_to_process {
                 self.process_statement_for_z3(stmt, &mut path_assertions)?;
             }
 
-            if let Node::Cond { expr: condition_expr, .. } = node {
+            if let Node::Cond {
+                expr: condition_expr,
+                ..
+            } = node
+            {
                 let condition_ast = self.python_expr_to_z3_bool(condition_expr)?;
                 match edge {
                     Edge::True => path_assertions.push(condition_ast),
@@ -547,43 +743,49 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
         if path_assertions.is_empty() {
             Ok(Bool::from_bool(self.z3_ctx, true))
         } else {
-            Ok(Bool::and(self.z3_ctx, &path_assertions.iter().collect::<Vec<_>>()))
+            Ok(Bool::and(
+                self.z3_ctx,
+                &path_assertions.iter().collect::<Vec<_>>(),
+            ))
         }
     }
 }
 
 pub fn analyze_paths(
-    all_paths: &[Vec<(NodeId, Edge)>], 
+    all_paths: &[Vec<(NodeId, Edge)>],
     cfg_data: &ControlFlowGraph,
 ) -> Vec<PathConstraintResult> {
     let z3_config = Config::new();
     let z3_ctx = Context::new(&z3_config);
-    let mut constraint_generator = match Z3ConstraintGenerator::new(&z3_ctx, cfg_data.get_arguments()) {
-        Ok(gen) => gen,
-        Err(e) => {
-            return all_paths
-                .iter()
-                .enumerate()
-                .map(|(i, _)| PathConstraintResult {
-                    path_index: i,
-                    is_satisfiable: false,
-                    model: None,
-                    error: Some(e.clone()),
-                })
-                .collect();
-        }
-    };
+    let mut constraint_generator =
+        match Z3ConstraintGenerator::new(&z3_ctx, cfg_data.get_arguments()) {
+            Ok(gen) => gen,
+            Err(e) => {
+                return all_paths
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| PathConstraintResult {
+                        path_index: i,
+                        is_satisfiable: false,
+                        model: None,
+                        error: Some(e.clone()),
+                    })
+                    .collect();
+            }
+        };
 
     all_paths
         .iter()
         .enumerate()
         .map(|(i, path)| {
-            if let Err(reinit_err) = constraint_generator.clear_and_reinitialize_args(cfg_data.get_arguments()) {
+            if let Err(reinit_err) =
+                constraint_generator.clear_and_reinitialize_args(cfg_data.get_arguments())
+            {
                 return PathConstraintResult {
                     path_index: i,
                     is_satisfiable: false,
                     model: None,
-                    error: Some(reinit_err), 
+                    error: Some(reinit_err),
                 };
             }
 
@@ -611,7 +813,9 @@ pub fn analyze_paths(
                         SatResult::Unknown => {
                             path_result.is_satisfiable = false;
                             path_result.error = Some(Z3Error::SolverUnknown(
-                                solver.get_reason_unknown().unwrap_or_else(|| "Reason unknown".to_string()),
+                                solver
+                                    .get_reason_unknown()
+                                    .unwrap_or_else(|| "Reason unknown".to_string()),
                             ));
                         }
                     }
@@ -625,8 +829,8 @@ pub fn analyze_paths(
         .collect()
 }
 
-#[allow(dead_code)] 
-pub fn print_paths_analysis(cfg: &ControlFlowGraph, paths: &[Vec<(NodeId, Edge)>]) { 
+#[allow(dead_code)]
+pub fn print_paths_analysis(cfg: &ControlFlowGraph, paths: &[Vec<(NodeId, Edge)>]) {
     let constraint_results = analyze_paths(paths, cfg);
     println!("=== PATH ANALYSIS RESULTS ===");
     println!("Total paths analyzed: {}\n", constraint_results.len());
@@ -640,13 +844,16 @@ pub fn print_paths_analysis(cfg: &ControlFlowGraph, paths: &[Vec<(NodeId, Edge)>
         }
         if let Some(model_str) = &result.model {
             println!("  Z3 Model:");
-            model_str.lines().filter(|line| !line.trim().is_empty()).for_each(|line| {
-                println!("    {}", line.trim());
-            });
+            model_str
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .for_each(|line| {
+                    println!("    {}", line.trim());
+                });
         }
         if let Some(err) = &result.error {
             println!("  Error: {}", err);
         }
-        println!(); 
+        println!();
     }
 }

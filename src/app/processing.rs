@@ -1,3 +1,5 @@
+use super::error::AppError;
+use super::{verbose_eprintln, verbose_println};
 use crate::ast_loader;
 use crate::cfg::ControlFlowGraph;
 use crate::path::{self, PathConstraintResult, PathScraper};
@@ -6,9 +8,6 @@ use rustpython_parser::ast::StmtFunctionDef;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
-use super::error::AppError;
-use super::{verbose_eprintln, verbose_println};
-
 
 pub fn load_functions_from_file(
     python_file_path: &PathBuf,
@@ -44,9 +43,15 @@ pub fn process_single_function(
 ) -> Result<(bool, Vec<String>, Vec<String>), AppError> {
     let func_name = func_def.name.to_string();
 
-    verbose_println!(quiet_mode, "\n------------------------------------------------------------");
+    verbose_println!(
+        quiet_mode,
+        "\n------------------------------------------------------------"
+    );
     verbose_println!(quiet_mode, "Function: {}", func_name);
-    verbose_println!(quiet_mode, "------------------------------------------------------------");
+    verbose_println!(
+        quiet_mode,
+        "------------------------------------------------------------"
+    );
 
     let mut tests_generated_for_this_function = false;
 
@@ -82,7 +87,10 @@ pub fn process_single_function(
         }
         verbose_println!(quiet_mode, "   => Found {} paths.", paths.len());
 
-        verbose_println!(quiet_mode, "[STEP 4] Analyzing paths and generating Z3 constraints...");
+        verbose_println!(
+            quiet_mode,
+            "[STEP 4] Analyzing paths and generating Z3 constraints..."
+        );
         let path_constraint_results = path::analyze_paths(&paths, &cfg_data);
 
         print_constraint_summary(&path_constraint_results, quiet_mode); // Removed func_name, context is implicit
@@ -98,13 +106,18 @@ pub fn process_single_function(
         generated_imports.extend(suite.imports);
         generated_test_functions.extend(suite.test_functions);
 
-        if generated_test_functions.iter().any(|s| s.trim().starts_with("def test_")) {
+        if generated_test_functions
+            .iter()
+            .any(|s| s.trim().starts_with("def test_"))
+        {
             tests_generated_for_this_function = true;
             verbose_println!(quiet_mode, "   => Generated test components.");
         } else {
-            verbose_println!(quiet_mode, "   => No satisfiable paths led to test generation.");
+            verbose_println!(
+                quiet_mode,
+                "   => No satisfiable paths led to test generation."
+            );
         }
-
     } else {
         verbose_println!(quiet_mode, "   => No paths found by PathScraper.");
     }

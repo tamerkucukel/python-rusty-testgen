@@ -360,6 +360,64 @@ impl PytestGenerator {
                                 );
                             }
                         }
+                        Expr::UnaryOp(rustpython_ast::ExprUnaryOp { op, operand, .. }) => {
+                            // Handle UnaryOp on a Constant, e.g., return -100.0
+                            if let rustpython_ast::UnaryOp::USub = op {
+                                if let Expr::Constant(ExprConstant {
+                                    value: const_val, ..
+                                }) = operand.deref()
+                                {
+                                    let mut expected_value_str =
+                                        Self::format_python_constant(const_val);
+                                    // Prepend negation, ensuring not to double-negate if format_python_constant already did (though unlikely for simple numbers)
+                                    if !expected_value_str.starts_with('-')
+                                        && expected_value_str != "0"
+                                        && expected_value_str != "0.0"
+                                    {
+                                        expected_value_str = format!("-{}", expected_value_str);
+                                    } else if expected_value_str.starts_with('-') {
+                                        // It's already negative, e.g. from a complex number or a string representation
+                                        // This case might need more nuanced handling if format_python_constant can produce negative strings for positive constants.
+                                    }
+
+                                    if is_return_type_float
+                                        && (const_val.is_float() || const_val.is_int())
+                                    {
+                                        test_body_lines.push(format!(
+                                            "    assert {} == pytest.approx({})",
+                                            call_stmt, expected_value_str
+                                        ));
+                                    } else {
+                                        test_body_lines.push(format!(
+                                            "    assert {} == {}",
+                                            call_stmt, expected_value_str
+                                        ));
+                                    }
+                                } else {
+                                    // UnaryOp on something other than a direct constant
+                                    test_body_lines.push(format!(
+                                        "    # Path returns a UnaryOp on a non-constant expression: {:?} applied to {:?}",
+                                        op, operand.deref()
+                                    ));
+                                    test_body_lines
+                                        .push(format!("    returnValue = {}", call_stmt));
+                                    test_body_lines.push(
+                                        "    # TODO: Add manual assertion for returnValue"
+                                            .to_string(),
+                                    );
+                                }
+                            } else {
+                                // Other UnaryOps (Not, Invert, UAdd)
+                                test_body_lines.push(format!(
+                                    "    # Path returns an unhandled UnaryOp expression: {:?} applied to {:?}",
+                                    op, operand.deref()
+                                ));
+                                test_body_lines.push(format!("    returnValue = {}", call_stmt));
+                                test_body_lines.push(
+                                    "    # TODO: Add manual assertion for returnValue".to_string(),
+                                );
+                            }
+                        }
                         _ => {
                             test_body_lines.push(format!(
                                 "    # Path returns a non-constant expression: {:?}",

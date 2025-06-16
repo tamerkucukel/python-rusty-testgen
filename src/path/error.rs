@@ -87,4 +87,12 @@ pub enum Z3Error {
     /// Error when a Python expression is malformed or cannot be parsed correctly.
     #[error("Malformed Python expression: {0}")]
     MalformedExpression(String),
+
+    /// Error when a Python unary operator is not supported for a specific Z3 sort.
+    #[error("Unsupported unary operator for Z3 conversion: {op:?}")]
+    UnsupportedUnaryOperatorForSort { op: UnaryOp, sort_name: String },
+
+    /// Internal error with a custom message.
+    #[error("Internal error: {0}")]
+    InternalError(String),
 }

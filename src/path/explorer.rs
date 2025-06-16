@@ -344,10 +344,7 @@ impl PathScraper {
         } else {
             writeln!(writer, "No paths found in the control flow graph.")?;
         }
-        writeln!(
-            writer,
-            "\n================================\n"
-        )?; // Footer for function
+        writeln!(writer, "\n================================\n")?; // Footer for function
         Ok(())
     }
 

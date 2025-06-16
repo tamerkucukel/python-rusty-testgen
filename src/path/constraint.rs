@@ -1,8 +1,23 @@
 use crate::cfg::{ControlFlowGraph, Edge, Node, NodeId};
 use rustpython_ast::{
-    BoolOp, CmpOp, Constant, Expr, ExprBinOp, ExprBoolOp, ExprCompare, ExprConstant, ExprContext,
-    ExprName, ExprUnaryOp, Operator, Stmt, StmtAssert, StmtAssign, StmtAugAssign, StmtExpr,
-    UnaryOp,
+    BoolOp,
+    CmpOp,
+    Constant,
+    Expr,
+    ExprBinOp,
+    ExprBoolOp,
+    ExprCompare,
+    ExprConstant,
+    ExprContext,
+    ExprName,
+    ExprUnaryOp,
+    Operator,
+    Stmt,
+    StmtAssert,
+    StmtAssign,
+    StmtAugAssign,
+    StmtExpr,
+    UnaryOp, // Ensure UnaryOp is imported
 };
 use std::collections::HashMap;
 // Import Z3 Real type
@@ -439,12 +454,63 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
         if let Ok(s_val) = self.python_expr_to_z3_string(expr) {
             return Ok(Dynamic::from_ast(&s_val));
         }
+        // python_expr_to_z3_bool handles UnaryOp::Not, BoolOp, and Compare internally
         if let Ok(b_val) = self.python_expr_to_z3_bool(expr) {
             return Ok(Dynamic::from_ast(&b_val));
         }
         if let Ok(i_val) = self.python_expr_to_z3_int(expr) {
             // Int last, as it could be promoted to Real
             return Ok(Dynamic::from_ast(&i_val));
+        }
+
+        // Handle UnaryOp if not caught by python_expr_to_z3_bool (e.g., for USub, UAdd)
+        if let Expr::UnaryOp(ExprUnaryOp { op, operand, .. }) = expr {
+            match op {
+                UnaryOp::USub => {
+                    let z3_operand_dynamic = self.python_expr_to_z3_dynamic(operand)?;
+                    match z3_operand_dynamic.get_sort().kind() {
+                        z3::SortKind::Int => {
+                            let int_val = z3_operand_dynamic.as_int().ok_or_else(|| {
+                                Z3Error::InternalError(
+                                    "USub: Failed to cast to Int after sort check".to_string(),
+                                )
+                            })?;
+                            return Ok(Dynamic::from_ast(&int_val.unary_minus()));
+                        }
+                        z3::SortKind::Real => {
+                            let real_val = z3_operand_dynamic.as_real().ok_or_else(|| {
+                                Z3Error::InternalError(
+                                    "USub: Failed to cast to Real after sort check".to_string(),
+                                )
+                            })?;
+                            return Ok(Dynamic::from_ast(&real_val.unary_minus()));
+                        }
+                        other_sort => {
+                            return Err(Z3Error::UnsupportedUnaryOperatorForSort {
+                                op: *op,
+                                sort_name: format!("{:?}", other_sort),
+                            });
+                        }
+                    }
+                }
+                UnaryOp::UAdd => {
+                    // Unary plus is a no-op, just return the operand's Z3 value
+                    return self.python_expr_to_z3_dynamic(operand);
+                }
+                UnaryOp::Not => {
+                    // This should have been handled by the `python_expr_to_z3_bool(expr)` call above.
+                    // If execution reaches here for UnaryOp::Not, it implies an issue with
+                    // the logic flow or that `python_expr_to_z3_bool` failed unexpectedly.
+                    return Err(Z3Error::InternalError(
+                        "UnaryOp::Not reached unexpected location in python_expr_to_z3_dynamic"
+                            .to_string(),
+                    ));
+                }
+                UnaryOp::Invert => {
+                    // Bitwise not (~) is not directly supported for Z3 Int/Real in this context.
+                    return Err(Z3Error::UnsupportedUnaryOperator { op: *op });
+                }
+            }
         }
 
         if let Expr::BinOp(ExprBinOp {
@@ -465,11 +531,11 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                     let left_val = left_dyn
                         .as_real()
                         .or_else(|| left_dyn.as_int().map(|i| Real::from_int(&i)))
-                        .unwrap();
+                        .unwrap(); // Assuming previous logic correctly ensures these are convertible
                     let right_val = right_dyn
                         .as_real()
                         .or_else(|| right_dyn.as_int().map(|i| Real::from_int(&i)))
-                        .unwrap();
+                        .unwrap(); // Assuming previous logic correctly ensures these are convertible
                     match op {
                         Operator::Add => Ok(Dynamic::from_ast(&Real::add(
                             self.z3_ctx,
@@ -484,17 +550,15 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                             &[&left_val, &right_val],
                         ))),
                         Operator::Div => Ok(Dynamic::from_ast(&Real::div(&left_val, &right_val))),
-                        Operator::Pow => { // ADDED Operator::Pow for Reals
-                            Ok(Dynamic::from_ast(&left_val.power(&right_val)))
-                        }
+                        Operator::Pow => Ok(Dynamic::from_ast(&left_val.power(&right_val))),
                         _ => Err(Z3Error::UnsupportedExpressionType {
                             expr_repr: format!("Unsupported binary operator {:?} for Reals", op),
                         }),
                     }
                 }
                 (z3::SortKind::Int, z3::SortKind::Int) => {
-                    let left_val = left_dyn.as_int().unwrap();
-                    let right_val = right_dyn.as_int().unwrap();
+                    let left_val = left_dyn.as_int().unwrap(); // Assuming previous logic
+                    let right_val = right_dyn.as_int().unwrap(); // Assuming previous logic
                     match op {
                         Operator::Add => Ok(Dynamic::from_ast(&Int::add(
                             self.z3_ctx,
@@ -508,11 +572,7 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                             self.z3_ctx,
                             &[&left_val, &right_val],
                         ))),
-                        Operator::Pow => { // ADDED Operator::Pow for Ints
-                            Ok(Dynamic::from_ast(&left_val.power(&right_val)))
-                        }
-                        // Integer division would be Int::div, but Python's / on ints can produce float.
-                        // For now, sticking to Z3 Int ops if both are Int.
+                        Operator::Pow => Ok(Dynamic::from_ast(&left_val.power(&right_val))),
                         _ => Err(Z3Error::UnsupportedExpressionType {
                             expr_repr: format!("Unsupported binary operator {:?} for Ints", op),
                         }),
@@ -627,7 +687,8 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                                     Operator::Div => {
                                         Dynamic::from_ast(&Real::div(&lhs_real, &rhs_real))
                                     }
-                                    Operator::Pow => { // Added Power support for Reals
+                                    Operator::Pow => {
+                                        // Added Power support for Reals
                                         Dynamic::from_ast(&lhs_real.power(&rhs_real))
                                     }
                                     _ => {
@@ -656,7 +717,8 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                                         self.z3_ctx,
                                         &[&lhs_int, &rhs_int],
                                     )),
-                                    Operator::Pow => { // Added Power support for Ints
+                                    Operator::Pow => {
+                                        // Added Power support for Ints
                                         Dynamic::from_ast(&lhs_int.power(&rhs_int))
                                     }
                                     // Note: Operator::Div for Ints would typically promote to Real in Python for /=
@@ -689,7 +751,7 @@ impl<'cfg> Z3ConstraintGenerator<'cfg> {
                             z3::SortKind::Real => Dynamic::from_ast(&Real::fresh_const(
                                 self.z3_ctx,
                                 &new_lhs_z3_var_name_prefix,
-                            )), 
+                            )),
                             // Assuming Bool and String aug assigns are not standard or handled elsewhere if needed
                             sort_kind => {
                                 return Err(Z3Error::TypeConversion(format!(

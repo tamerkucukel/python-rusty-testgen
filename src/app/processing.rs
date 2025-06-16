@@ -176,10 +176,7 @@ pub fn process_single_function(
 /// # Arguments
 /// * `path_constraint_results` - A slice of `PathConstraintResult` from Z3 analysis.
 /// * `quiet_mode` - Suppresses output if true.
-fn print_constraint_summary(
-    path_constraint_results: &[PathConstraintResult],
-    quiet_mode: bool,
-) {
+fn print_constraint_summary(path_constraint_results: &[PathConstraintResult], quiet_mode: bool) {
     if quiet_mode {
         return;
     }

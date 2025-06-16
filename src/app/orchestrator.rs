@@ -61,7 +61,11 @@ pub fn run_app(cli: Cli) -> Result<(), AppError> {
             verbose_println!(quiet_mode, "Verbose logging initialized to testgen.log");
             // Initial flush after initialization message.
             if let Err(e) = logger::flush_global_logger() {
-                verbose_eprintln!(quiet_mode, "[WARNING] Failed to flush testgen.log after initialization: {}", e);
+                verbose_eprintln!(
+                    quiet_mode,
+                    "[WARNING] Failed to flush testgen.log after initialization: {}",
+                    e
+                );
             }
         }
     }
@@ -99,7 +103,10 @@ pub fn run_app(cli: Cli) -> Result<(), AppError> {
         // Ensure final flush of testgen.log if it was initialized
         if !quiet_mode {
             if let Err(e) = logger::flush_global_logger() {
-                 eprintln!("[WARNING] Failed to perform final flush of testgen.log: {}", e);
+                eprintln!(
+                    "[WARNING] Failed to perform final flush of testgen.log: {}",
+                    e
+                );
             }
         }
         return Ok(());
@@ -152,7 +159,10 @@ pub fn run_app(cli: Cli) -> Result<(), AppError> {
         if !quiet_mode {
             if let Err(e) = logger::flush_global_logger() {
                 // Log to stderr as testgen.log itself might be the one failing.
-                eprintln!("[WARNING] Failed to flush testgen.log after processing function '{}': {}", func_def.name, e);
+                eprintln!(
+                    "[WARNING] Failed to flush testgen.log after processing function '{}': {}",
+                    func_def.name, e
+                );
             }
         }
     }
@@ -233,7 +243,10 @@ pub fn run_app(cli: Cli) -> Result<(), AppError> {
                 // Ensure final flush of testgen.log before returning error
                 if !quiet_mode {
                     if let Err(flush_err) = logger::flush_global_logger() {
-                         eprintln!("[WARNING] Failed to perform final flush of testgen.log on error: {}", flush_err);
+                        eprintln!(
+                            "[WARNING] Failed to perform final flush of testgen.log on error: {}",
+                            flush_err
+                        );
                     }
                 }
                 return Err(AppError::Io(e));
@@ -250,7 +263,10 @@ pub fn run_app(cli: Cli) -> Result<(), AppError> {
     // Final flush of testgen.log before exiting successfully.
     if !quiet_mode {
         if let Err(e) = logger::flush_global_logger() {
-            eprintln!("[WARNING] Failed to perform final flush of testgen.log: {}", e);
+            eprintln!(
+                "[WARNING] Failed to perform final flush of testgen.log: {}",
+                e
+            );
         }
     }
 

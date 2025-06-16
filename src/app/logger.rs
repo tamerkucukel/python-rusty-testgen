@@ -73,10 +73,7 @@ pub fn log_verbose_message_args(args: std::fmt::Arguments) {
             }
         }
         Err(poison_error) => {
-            eprintln!(
-                "Fallback (logger mutex error: {}): {}",
-                poison_error, args
-            );
+            eprintln!("Fallback (logger mutex error: {}): {}", poison_error, args);
         }
     }
 }

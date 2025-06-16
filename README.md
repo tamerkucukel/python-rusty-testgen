@@ -1,5 +1,9 @@
 # Python Rusty TestGen
 
+<p align="center">
+  <img src="static/logo-tk.svg" alt="Python Rusty TestGen Logo" width="200"/>
+</p>
+
 Python Rusty TestGen is a command-line tool written in Rust that automatically generates `pytest` unit tests for Python functions. It analyzes Python code, explores execution paths, and uses the Z3 SMT solver to determine input values that cover these paths, then generates test cases based on this analysis.
 
 ## Overview

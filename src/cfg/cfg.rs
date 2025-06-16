@@ -92,6 +92,7 @@ pub struct ControlFlowGraph {
     fn_return_type: Option<String>, // NEW FIELD
 }
 
+#[allow(dead_code)]
 impl ControlFlowGraph {
     /// Creates a new, empty `ControlFlowGraph`.
     pub fn new() -> Self {

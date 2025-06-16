@@ -1,30 +1,10 @@
 use crate::cfg::NodeId;
-use rustpython_ast::{BoolOp, CmpOp, Constant, UnaryOp}; // Using user's import style
+use rustpython_ast::{CmpOp, Constant, UnaryOp}; // Using user's import style
 use thiserror::Error;
-
-// Error type for path analysis operations.
-#[derive(Error, Debug, Clone)]
-pub enum PathError {
-    /// Error when the control flow graph is empty.
-    #[error("Control flow graph is empty, cannot extract paths.")]
-    EmptyGraph,
-
-    /// Error when no paths are found in the control flow graph.
-    #[error("No paths found in the control flow graph.")]
-    NoPathsFound,
-}
 
 // Error type for Z3 operations and AST to Z3 conversion.
 #[derive(Error, Debug, Clone)]
 pub enum Z3Error {
-    /// Error when initializing the Z3 context.
-    #[error("Failed to initialize Z3 context: {0}")]
-    Initialization(String),
-
-    /// Error when creating a Z3 solver.
-    #[error("Failed to create Z3 solver: {0}")]
-    SolverCreation(String),
-
     /// Error when Z3 solver returns an unknown status.
     #[error("Z3 solver returned unknown: {0}")]
     SolverUnknown(String),
@@ -45,14 +25,6 @@ pub enum Z3Error {
     #[error("Unsupported unary operator for Z3 conversion: {op:?}")]
     UnsupportedUnaryOperator { op: UnaryOp },
 
-    /// Error when a Python boolean operator is not supported.
-    #[error("Unsupported boolean operator for Z3 conversion: {op:?}")]
-    UnsupportedBoolOperator { op: BoolOp },
-
-    /// Error when a Python comparison operator is not supported for a given type or in general.
-    #[error("Unsupported comparison operator for Z3 conversion: {op:?}")]
-    UnsupportedCmpOperator { op: CmpOp },
-
     /// Error when a boolean operation (e.g., And, Or) has no values.
     #[error("Boolean operation received empty values list")]
     EmptyBoolOpValues,
@@ -67,10 +39,6 @@ pub enum Z3Error {
     /// Error when a NodeId is not found in the ControlFlowGraph.
     #[error("NodeId {0} not found in CFG")]
     NodeNotFoundInCfg(NodeId),
-
-    /// Error related to specific expression variants not being handled.
-    #[error("Unhandled expression variant: {variant_name:?}")]
-    UnhandledExpressionVariant { variant_name: String },
 
     /// Error when a comparison operator is not supported for a specific Z3 sort.
     #[error("Comparison operator {op:?} not supported for Z3 sort {sort_name}")]

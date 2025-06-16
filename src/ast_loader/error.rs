@@ -15,10 +15,6 @@ pub enum AstLoaderError {
     #[error("Failed to parse AST from '{0}': {1}")]
     ParseAst(String, rustpython_parser::ParseError),
 
-    /// Error when extracting function definitions from the AST.
-    #[error("Failed to extract function definitions from AST, you may not have functions ?: {0}")]
-    ExtractFunctionDefs(String),
-
     /// Error when no function definitions are found in the AST.
     #[error("No function definitions found in the AST for file '{0}'")]
     NoFunctionsFound(String),

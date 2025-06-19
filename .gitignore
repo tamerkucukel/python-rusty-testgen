@@ -22,3 +22,4 @@ Cargo.lock
 
 # Python files are used for tests so it is not necessary.
 *.py
+!test_file.py
